@@ -88,7 +88,11 @@ def attribute_additive(
     B, C = sum(b.values()), sum(c.values())
     delta = C - B
     out = []
-    for k in set(b) | set(c):
+    # sorted(), not set order: the sort below is stable, so exactly-tied slices
+    # (common when the delta is ~0 and every explanatory power is 0.0) would
+    # otherwise be ordered by string hashing, which varies between processes.
+    # Replay comparisons need byte-identical output.
+    for k in sorted(set(b) | set(c)):
         bv, cv = b.get(k, 0.0), c.get(k, 0.0)
         ep = (cv - bv) / delta if abs(delta) > 1e-12 else 0.0
         sp = _js_surprise(bv / B if B else 0.0, cv / C if C else 0.0)
@@ -123,7 +127,7 @@ def attribute_ratio(
     total_delta = Rc - Rb
 
     out = []
-    for k in set(db) | set(dc):
+    for k in sorted(set(db) | set(dc)):  # deterministic tie order; see attribute_additive
         d_b, d_c = db.get(k, 0.0), dc.get(k, 0.0)
         n_b, n_c = nb.get(k, 0.0), nc.get(k, 0.0)
         r_b = n_b / d_b if d_b else 0.0

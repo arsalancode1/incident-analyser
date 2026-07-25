@@ -83,7 +83,12 @@ class MetricTools:
         return out
 
     def describe_metric(self, metric: str) -> dict[str, Any]:
-        return self.catalog.get(metric).summary()
+        # Recorded like every other tool result: a report that leans on what a
+        # metric *means* ("this counter excludes retries") is making a claim,
+        # and it needs an id to cite for it.
+        out = self.catalog.get(metric).summary()
+        out["evidence_id"] = self.evidence.add("describe_metric", {"metric": metric}, out)
+        return out
 
     def list_field_values(self, metric: str, field_name: str, window: Window) -> dict[str, Any]:
         """The agent must resolve field values through this, never from memory."""
