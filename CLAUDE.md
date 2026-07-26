@@ -1,115 +1,139 @@
 # CLAUDE.md
 
-Context for Claude Code. Read this before changing anything.
+Project-wide context. Read `DESIGN.md` when making architecture decisions —
+it has the reasoning behind everything below.
 
-## What this is
+## What we're building
 
-The metrics tool family for an automated incident debugging agent, targeting a
-planet-scale distributed database (Spanner-shaped: multi-region, multi-cell,
-metrics in a distributed in-memory TSDB, plus logs, traces, and change tables).
+An agent that automatically debugs production incidents on a planet-scale
+distributed database (Spanner-shaped: jobs and services across many regions and
+cells). Debugging signal lives in four places:
 
-**There is no LLM in this repo.** This is the deterministic layer an orchestrator
-calls into. Keep it that way — see the architecture rule below.
+- **Metrics** — planet-scale distributed in-memory TSDB, high-cardinality tags
+  (region, cell, job, version, task, alloc)
+- **Logs** — code logs, queryable tables
+- **Traces** — distributed traces per request
+- **Changes** — rollouts, config pushes, flag flips, capacity ops, schema changes
 
-## The architecture rule
+**Success condition:** when a page fires, the investigation is already done by
+the time on-call opens their laptop. The deliverable is an incident brief posted
+to the incident channel — not a new dashboard, which would fail on adoption.
 
-Determinism belongs in the **tools**, not in the **steps**.
+**Current state: only the metrics component exists.** Everything else below is
+unbuilt. Don't assume a module is there because this file mentions it.
 
-Hand-written playbooks ("check QPS, then check latency") fail on novel incidents
-and rot silently. A fully free-form agent wanders, anchors on the first plausible
-story, and burns context. So: the orchestrator plans freely and decides what to
-call next; everything it calls is validated, budgeted, deterministic, and
-returns compact summaries.
+## The decision everything else follows from
 
-Practical consequence for anything you add here: if you find yourself encoding an
-investigation *sequence*, stop. Encode the *capability* instead and let the
-planner sequence it.
+**Determinism belongs in the tools, not in the steps.**
 
-## Two invariants — do not weaken these
+Hand-written playbooks ("check QPS, then latency, then...") serve one incident
+class each, so maintenance scales with the number of failure modes — unbounded,
+and they rot silently. A fully free-form agent avoids that but wanders, anchors
+on the first plausible story, and gathers only confirming evidence.
 
-**1. A bad selector is an error, not a finding.**
+So: the orchestrator plans freely and decides what to call next. Everything it
+calls is schema-validated, budgeted, deterministic, and returns compact
+summaries. A good tool serves every investigation touching that data source, so
+maintenance scales with the number of data sources instead — small and stable.
 
-`region="us-east1"` against a fleet using `us-east-1` must raise `ToolError`,
-never return `[]`. An empty result is indistinguishable from "that region is
-healthy," and an agent will confidently report the latter. This is the single
-most dangerous failure mode in the whole system.
+**Practical consequence.** If you find yourself encoding an investigation
+*sequence*, stop. Encode the *capability* and let the planner sequence it. The
+one exception is a fixed opening sweep before any drill-down, which exists
+specifically to prevent tunnel vision.
 
-`ResultStatus.EMPTY_SELECTOR` exists only for this. `TSDBClient` implementations
-must return it — not `OK` with zero series — when a filter matches no known
-entity. Errors carry `did_you_mean` suggestions so a typo self-corrects in one turn.
+## Project-wide invariants
 
-**2. The agent never sees raw time series points.**
+These bind every component, not just metrics.
 
-Points are token-expensive and models are bad at spotting steps in long float
-lists. `summarize.py` reduces a series to ~25 tokens: stats, delta, change point,
-shape. Anything you add that returns arrays of points to the tool boundary is a bug.
+1. **A bad selector is an error, not a finding.** A filter that matches no known
+   entity must raise with `did_you_mean` suggestions, never return empty. An
+   empty result is indistinguishable from "that slice is healthy," and the agent
+   will confidently report the latter. This is the most dangerous failure mode
+   in the system.
 
-## Layout
+2. **The agent never sees raw data.** No point arrays, no log dumps, no full
+   traces. Reduce in code first: series → stats and change points, logs →
+   template frequency diffs, traces → span-level diffs against a fast baseline.
+   Anything returning bulk data across the tool boundary is a bug.
 
-```
-metric_analysis/
-  types.py        Series, Window, ResultStatus, ToolError
-  catalog.py      metric semantics, schema validation, fuzzy suggestions
-  tsdb.py         TSDBClient protocol + SyntheticTSDB (tests/replay)
-  changepoint.py  onset detection (O(n) Welch scan), shape classification
-  summarize.py    series -> compact summary; peer outlier ranking
-  attribution.py  explain_delta: additive + exact ratio decomposition
-  tools.py        agent-facing surface: validation, budgets, cache, evidence
-```
+3. **Every claim cites evidence.** Tool results carry an `evidence_id` recorded
+   in an append-only ledger. A verifier pass — fresh model call that sees claims
+   and raw results but *not* the agent's reasoning — strips unsupported claims
+   rather than softening them.
 
-## Commands
+4. **No dependency on the system being debugged.** If it stores state in the
+   database it debugs, it fails exactly when needed. Audit the full dependency
+   closure; any edge back into the debugged system is a bug.
 
-```bash
-python3 test_metric_analysis.py    # 15 tests, no pytest needed
-python3 demo_investigation.py      # end-to-end on a synthetic incident
-```
+5. **Read-only, budgeted, circuit-broken.** An agent fanning out aggressively
+   during a P0 is a real way to turn one incident into two.
 
-Tests must stay dependency-light (numpy only) and runnable without a real TSDB.
-`SyntheticTSDB` is the seed of the replay harness — same shape, with frozen
-snapshots of real incidents swapped in later.
+6. **"I don't know" is a first-class output.** If evals reward producing an
+   answer, the system learns to fabricate one. Explicit "not checked" and
+   "ruled out" lists are often more useful to on-call than the conclusion.
 
-## The maths worth understanding before editing `attribution.py`
+## Components
 
-`attribute_ratio` decomposes a rate change **exactly**:
+| Component | Status | Notes |
+|---|---|---|
+| Metrics tools | **built** | `metric_analysis/`, 15 tests |
+| Change log tool | **next** | rollouts, config, flags, capacity ops |
+| Topology tool | not built | dependency graph; without it you can't get from a frontend symptom to a backend cause |
+| Log tools | not built | template clustering, frequency diffs |
+| Trace tools | not built | exemplars linked from latency buckets, span diffs |
+| Harness | not built | loop control, dispatch, evidence ledger, replay |
+| Orchestrator | not built | prompts, sub-agents, output schema |
+| Skills | not built | incident-class priors contributed post-postmortem |
+| Eval harness | not built | replay over historical incidents, frozen snapshots |
 
-```
-R_c - R_b = Σ (d_c/D_c)(r_c - r_b)      rate effect: the slice itself got worse
-          + Σ (d_c/D_c - d_b/D_b) r_b   mix effect: traffic moved to a bad slice
-```
+Rough effort split: 80% harness and tools, 15% skills, 5% agent. Teams routinely
+plan this backwards.
 
-These are different incidents with different fixes. Rate effect pages the service
-owner; mix effect pages whoever changed routing. A test asserts the two sum to
-the true delta within 1e-12 — if you touch this, that test must still pass.
+**Build order.** Change log is next because `find_onset` already emits a precise
+timestamp whose entire purpose is to be intersected with deploys — in a large
+fraction of incidents that intersection *is* the root cause. Topology after,
+since symptom-to-cause traversal needs it.
 
-`explain_delta` narrows greedily but has a `cohesion` guard: once past the
-explanatory threshold it keeps absorbing values that are comparably large, and
-refuses to narrow further when several share the blame. This exists because the
-first version reported `job=frontend` alone while `txn-coordinator` was failing
-just as hard — plausible, well-formatted, and wrong in a way that sends someone
-to the wrong team. Do not remove it for tidier output.
+## Skills are the contribution surface
+
+When built: after a postmortem an SRE writes a declarative note — "Paxos leader
+election storms show up as `raft.election_count` spiking with flat QPS; the tell
+versus a network partition is `heartbeat_rtt` p50 staying normal while p99
+doesn't" — and the agent retrieves it as a *prior* when the symptom matches.
+
+Nobody maintains an execution graph. A missing contribution degrades the system
+gracefully instead of breaking it. Keep skills declarative: the moment someone
+writes "step 1, step 2" into a skill, we've reinvented the playbook.
+
+## Rollout staging
+
+1. **Tool layer + auto-generated brief.** No reasoning at all — onset, blast
+   radius, correlated changes, top contributing dimensions. Saves on-call ten
+   minutes per incident and proves the tool layer works.
+2. **Hypothesis generation in shadow mode.** Runs live, output hidden, compared
+   against what humans concluded.
+3. **Advisory.** Trust earned per incident class.
+
+Underclaim in naming. Anything called `AutoRCA` sets an expectation it can't
+meet, and the first confidently wrong output turns the name into a joke.
 
 ## Conventions
 
-- Type hints everywhere; `from __future__ import annotations`.
-- Tool functions return JSON-serializable dicts with an `evidence_id`.
-- Every tool result is recorded in the evidence ledger so downstream claims can
-  cite it. New tools must do this too.
-- Comments explain *why*, especially where a guardrail looks paranoid.
-- No new runtime dependencies without discussion. numpy only, so far.
+- Python 3.11+, type hints, `from __future__ import annotations`.
+- numpy is the only runtime dependency. Don't add more without discussion.
+- Tool functions return JSON-serializable dicts including an `evidence_id`.
+- Tests stay dependency-light and runnable without a real backend. Synthetic
+  fixtures are the seed of the replay harness — same shape, frozen snapshots of
+  real incidents swapped in later.
+- Comments explain *why*, especially where a guardrail looks paranoid. When you
+  add a guardrail, record the bug that motivated it — that's what stops a future
+  session deleting it for tidier output.
+- Run `python3 test_metric_analysis.py` before reporting a change complete.
 
-## Known gaps
+## Further context
 
-- **Distribution metrics.** Percentiles aren't additive, so `explain_delta` on
-  `spanner.rpc.latency` ranks by peer deviation × volume instead of decomposing.
-  Needs a real approach if latency attribution matters.
-- **Seasonal baselines.** `Window` supports same-time-last-week; nothing selects
-  it automatically.
-- **`search_metrics`** is keyword matching standing in for a vector index.
-- **Single process.** No regional worker split yet; tool execution should
-  eventually run next to the data with only summaries crossing regions.
-
-## Next component
-
-The change-log tool. `find_onset` already emits a precise timestamp whose entire
-purpose is to be intersected with deploys, config pushes, and flag flips. In most
-incidents that intersection *is* the root cause.
+- `DESIGN.md` — full architecture reasoning, anti-hallucination scaffolding,
+  operational constraints, evaluation strategy. Read when making design
+  decisions; not needed every session.
+- `metric_analysis/CLAUDE.md` — metrics component specifics. Loads automatically
+  when working in that directory.
