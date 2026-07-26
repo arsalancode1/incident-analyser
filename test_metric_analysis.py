@@ -216,6 +216,38 @@ def _():
         assert e.kind == "unknown_field_value"
 
 
+# ----------------------------------------------------- replay reproducibility
+@check("stable_hash is constant across processes")
+def _():
+    from metric_analysis.tsdb import stable_hash
+    # Builtin hash() would return a different value every run (PEP 456 salting),
+    # silently reshaping the synthetic fleet and making replay meaningless.
+    assert stable_hash("eu-west-4", "fb", "frontend") == 1561409042999120442
+
+
+@check("synthetic fixture is byte-identical across separate processes")
+def _():
+    import subprocess
+    import sys
+
+    prog = (
+        "import json;"
+        "from metric_analysis import MetricTools, SyntheticTSDB, Window, demo_catalog;"
+        "N=1750000000.0;O=N-2400;"
+        "t=MetricTools(demo_catalog(), SyntheticTSDB(seed=11, fault_start=O, rollout_start=O));"
+        "r=t.explain_delta('spanner.rpc.errors',['region','cell','job'],"
+        "Window(N-14400,N-10800),Window(N-1800,N));"
+        "print(json.dumps([r['narrowed_to'], r['spans'], r['attribution_path']], sort_keys=True))"
+    )
+    runs = {
+        subprocess.run(
+            [sys.executable, "-c", prog], capture_output=True, text=True, check=True
+        ).stdout
+        for _ in range(3)
+    }
+    assert len(runs) == 1, f"fixture is not reproducible across processes: {len(runs)} variants"
+
+
 @check("every tool result carries an evidence id")
 def _():
     onset = NOW - 40 * 60

@@ -154,7 +154,7 @@ def explain_delta(
     incident: Window,
     denominator: str | None = None,
     teep: float = 0.67,
-    cohesion: float = 0.25,
+    min_share: float = 0.10,
     max_depth: int = 4,
 ) -> dict[str, Any]:
     """Find the smallest slice specification that explains the change.
@@ -195,14 +195,19 @@ def explain_delta(
             if len(contribs) < 2:
                 continue
             # Smallest prefix of values reaching the explanatory threshold --
-            # but once past it, keep absorbing values that are comparably large.
-            # Without this, a 0.70/0.29 split reports only the first value and
-            # silently drops a second slice that is failing just as hard.
+            # then keep absorbing any value still responsible for at least
+            # `min_share` of the total change.
+            #
+            # The floor is absolute, not relative to the last value taken. A
+            # relative test sits at whatever height the first value happens to
+            # land on, so a 0.81/0.19 split drops a slice that is genuinely
+            # broken while a 0.70/0.29 split keeps it. Materiality doesn't
+            # depend on how big the biggest contributor was.
             cum, take = 0.0, []
             for c in contribs:
                 if c.explanatory_power <= 0:
                     break
-                if cum >= teep and c.explanatory_power < cohesion * take[-1].explanatory_power:
+                if cum >= teep and c.explanatory_power < min_share:
                     break
                 take.append(c)
                 cum += c.explanatory_power

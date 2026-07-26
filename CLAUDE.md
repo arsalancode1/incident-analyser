@@ -1,74 +1,26 @@
-# CLAUDE.md
+# Metrics component
 
-Context for Claude Code. Read this before changing anything.
+Project-wide rules are in the root `CLAUDE.md`. This file covers what's specific
+to the metrics tools. There is no LLM in this package — it's the deterministic
+layer the orchestrator calls into. Keep it that way.
 
-## What this is
-
-The metrics tool family for an automated incident debugging agent, targeting a
-planet-scale distributed database (Spanner-shaped: multi-region, multi-cell,
-metrics in a distributed in-memory TSDB, plus logs, traces, and change tables).
-
-**There is no LLM in this repo.** This is the deterministic layer an orchestrator
-calls into. Keep it that way — see the architecture rule below.
-
-## The architecture rule
-
-Determinism belongs in the **tools**, not in the **steps**.
-
-Hand-written playbooks ("check QPS, then check latency") fail on novel incidents
-and rot silently. A fully free-form agent wanders, anchors on the first plausible
-story, and burns context. So: the orchestrator plans freely and decides what to
-call next; everything it calls is validated, budgeted, deterministic, and
-returns compact summaries.
-
-Practical consequence for anything you add here: if you find yourself encoding an
-investigation *sequence*, stop. Encode the *capability* instead and let the
-planner sequence it.
-
-## Two invariants — do not weaken these
-
-**1. A bad selector is an error, not a finding.**
-
-`region="us-east1"` against a fleet using `us-east-1` must raise `ToolError`,
-never return `[]`. An empty result is indistinguishable from "that region is
-healthy," and an agent will confidently report the latter. This is the single
-most dangerous failure mode in the whole system.
-
-`ResultStatus.EMPTY_SELECTOR` exists only for this. `TSDBClient` implementations
-must return it — not `OK` with zero series — when a filter matches no known
-entity. Errors carry `did_you_mean` suggestions so a typo self-corrects in one turn.
-
-**2. The agent never sees raw time series points.**
-
-Points are token-expensive and models are bad at spotting steps in long float
-lists. `summarize.py` reduces a series to ~25 tokens: stats, delta, change point,
-shape. Anything you add that returns arrays of points to the tool boundary is a bug.
-
-## Layout
+## Agent-facing surface (`tools.py`)
 
 ```
-metric_analysis/
-  types.py        Series, Window, ResultStatus, ToolError
-  catalog.py      metric semantics, schema validation, fuzzy suggestions
-  tsdb.py         TSDBClient protocol + SyntheticTSDB (tests/replay)
-  changepoint.py  onset detection (O(n) Welch scan), shape classification
-  summarize.py    series -> compact summary; peer outlier ranking
-  attribution.py  explain_delta: additive + exact ratio decomposition
-  tools.py        agent-facing surface: validation, budgets, cache, evidence
+search_metrics(intent)                          ranked metric specs
+describe_metric(metric)                          schema + semantics
+list_field_values(metric, field, window)         live values; never guess these
+series_summary(metric, filters, incident, base)  stats, delta, onset, shape
+find_onset(metric, filters, window)              coarse scan then fine re-query
+explain_delta(metric, fields, base, incident)    which slice moved it
+peer_comparison(metric, peer_field, incident)    robust-z against siblings
+correlation_scan(onset, window)                  what else changed then
 ```
 
-## Commands
+New tools must validate against the catalog, charge the budget, and record an
+`evidence_id`.
 
-```bash
-python3 test_metric_analysis.py    # 15 tests, no pytest needed
-python3 demo_investigation.py      # end-to-end on a synthetic incident
-```
-
-Tests must stay dependency-light (numpy only) and runnable without a real TSDB.
-`SyntheticTSDB` is the seed of the replay harness — same shape, with frozen
-snapshots of real incidents swapped in later.
-
-## The maths worth understanding before editing `attribution.py`
+## Read `attribution.py` before editing it
 
 `attribute_ratio` decomposes a rate change **exactly**:
 
@@ -78,24 +30,64 @@ R_c - R_b = Σ (d_c/D_c)(r_c - r_b)      rate effect: the slice itself got worse
 ```
 
 These are different incidents with different fixes. Rate effect pages the service
-owner; mix effect pages whoever changed routing. A test asserts the two sum to
-the true delta within 1e-12 — if you touch this, that test must still pass.
+owner; mix effect pages whoever changed routing. Collapsing them into one number
+sends people to the wrong team. A test asserts the two sum to the true delta
+within 1e-12 — if you touch this, that test must still pass.
 
-`explain_delta` narrows greedily but has a `cohesion` guard: once past the
-explanatory threshold it keeps absorbing values that are comparably large, and
-refuses to narrow further when several share the blame. This exists because the
-first version reported `job=frontend` alone while `txn-coordinator` was failing
-just as hard — plausible, well-formatted, and wrong in a way that sends someone
-to the wrong team. Do not remove it for tidier output.
+`explain_delta` narrows greedily with a `min_share` guard (default 0.10): once
+past the explanatory threshold it keeps absorbing any value still responsible
+for at least that share of the change, and refuses to narrow further when
+several share the blame.
 
-## Conventions
+**Why it's there.** The first version reported `job=frontend` alone at 0.706
+explanatory power while `txn-coordinator` at 0.294 was failing just as hard.
+Plausible, well-formatted, and wrong in a way that sends someone to the wrong
+team. No prompt could have caught this — it was arithmetic in the tool layer,
+which is the whole argument for keeping arithmetic out of the model.
 
-- Type hints everywhere; `from __future__ import annotations`.
-- Tool functions return JSON-serializable dicts with an `evidence_id`.
-- Every tool result is recorded in the evidence ledger so downstream claims can
-  cite it. New tools must do this too.
-- Comments explain *why*, especially where a guardrail looks paranoid.
-- No new runtime dependencies without discussion. numpy only, so far.
+**Why the floor is absolute, not relative.** The guard originally compared each
+value against 25% of the last one taken, which puts the bar at whatever height
+the biggest contributor happens to land on: an 0.81/0.19 split dropped a broken
+slice while 0.70/0.29 kept it. Materiality doesn't depend on how big the largest
+contributor was. Don't reintroduce a relative test, and don't remove the guard
+for tidier output.
+
+## Fixture reproducibility
+
+`SyntheticTSDB` must be byte-identical across processes — it's the seed of the
+replay harness, and a fixture that reshapes itself makes replay meaningless.
+
+Use `stable_hash()` from `tsdb.py`, never Python's builtin `hash()`, which is
+salted per process (PEP 456). That bug produced a test failing roughly one run
+in six, which is worse than a hard failure because it reads as noise. Two tests
+guard it now; don't weaken them, and don't paper over failures with
+`PYTHONHASHSEED`.
+
+## Time series specifics
+
+- **Two-pass onset detection.** Coarse buckets to locate, fine re-query in a
+  narrow band to pin. The precise timestamp is what gets intersected with the
+  deploy log, so the second query pays for itself.
+- **Peer baselines beat temporal baselines.** "8x the median of its 47 siblings"
+  survives a traffic spike that fools a week-over-week delta.
+- **Aggregation is pushed server-side.** Never pull per-task series and roll up
+  in the client.
+- **Progressive narrowing**, never full-cardinality queries: global → region →
+  cell → job → task.
+
+## Wiring a real TSDB
+
+Implement `TSDBClient.fetch` and `.field_values` (see `tsdb.py`). Two hard
+requirements: server-side aggregation, and `fetch` must return `EMPTY_SELECTOR`
+— not `OK` with zero series — when the filter matches no known entity. That
+second one is the most likely thing to be quietly wrong in a real backend, and
+it silently corrupts every conclusion downstream.
+
+Keep `SyntheticTSDB` working; it's what the tests and replay harness run against.
+
+Generate the catalog nightly from the metric registry. Auto-draft descriptions,
+have owners review them. The agent is close to useless without good descriptions
+— this is the part that needs real investment and the part teams underinvest in.
 
 ## Known gaps
 
@@ -105,11 +97,5 @@ to the wrong team. Do not remove it for tidier output.
 - **Seasonal baselines.** `Window` supports same-time-last-week; nothing selects
   it automatically.
 - **`search_metrics`** is keyword matching standing in for a vector index.
-- **Single process.** No regional worker split yet; tool execution should
-  eventually run next to the data with only summaries crossing regions.
-
-## Next component
-
-The change-log tool. `find_onset` already emits a precise timestamp whose entire
-purpose is to be intersected with deploys, config pushes, and flag flips. In most
-incidents that intersection *is* the root cause.
+- **Single process.** Tool execution should eventually run next to the data in
+  each region, with only summaries crossing regions.
