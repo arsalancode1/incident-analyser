@@ -18,7 +18,7 @@ from .catalog import DEMO_FLEET, MetricCatalog, MetricSpec, demo_catalog
 from .changepoint import ChangePoint, classify_shape, detect_change_point
 from .summarize import peer_outliers, summarize_series
 from .tools import Budget, Evidence, MetricTools
-from .tsdb import SyntheticTSDB, TSDBClient
+from .tsdb import SyntheticTSDB, TSDBClient, stable_hash
 from .types import QueryResult, ResultStatus, Series, ToolError, Window
 
 __all__ = [
@@ -44,5 +44,6 @@ __all__ = [
     "detect_change_point",
     "explain_delta",
     "peer_outliers",
+    "stable_hash",
     "summarize_series",
 ]

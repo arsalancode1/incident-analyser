@@ -4,7 +4,7 @@ The metrics tool family for the incident debugging agent. No LLM anywhere in
 here — this is the deterministic layer the orchestrator calls into.
 
 ```
-python3 test_metric_analysis.py     # 15 tests
+python3 test_metric_analysis.py     # 17 tests
 python3 demo_investigation.py       # end-to-end on a synthetic incident
 ```
 

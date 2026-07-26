@@ -35,6 +35,20 @@ from .catalog import MetricCatalog, MetricSpec, demo_catalog
 from .types import QueryResult, ResultStatus, Series, ToolError, Window
 
 
+def stable_hash(*parts: str) -> int:
+    """Deterministic across processes.
+
+    Python's builtin hash() is salted per process (PEP 456), so using it for
+    fixture offsets makes the synthetic fleet reshape itself on every run. That
+    is fatal for a replay harness, whose entire purpose is reproducibility --
+    and it shows up as a test that fails roughly one run in six, which is worse
+    than a hard failure because it reads as noise.
+    """
+    return int.from_bytes(
+        hashlib.blake2b("\x00".join(parts).encode(), digest_size=8).digest(), "big"
+    )
+
+
 class TSDBClient(Protocol):
     def fetch(
         self,
@@ -77,7 +91,7 @@ class SyntheticTSDB:
     FAULT_CELL = "fb"
     # Error rates the faulted jobs jump to. Chosen so their contributions are
     # comparable -- frontend carries more traffic, txn-coordinator degrades
-    # harder -- which is what exercises the cohesion guard in explain_delta.
+    # harder -- which is what exercises the min_share guard in explain_delta.
     # tablet-server runs in the same cell and stays healthy, so the guard has
     # something it must exclude.
     FAULT_JOBS = {"frontend": 0.12, "txn-coordinator": 0.14}
@@ -105,9 +119,13 @@ class SyntheticTSDB:
 
     # -- determinism helpers ----------------------------------------------
     def _u(self, *key: Any) -> float:
-        """Uniform [0,1) keyed by content rather than by call order."""
-        raw = "\x1f".join(str(k) for k in (self.seed, *key)).encode()
-        return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big") / 2.0**64
+        """Uniform [0,1) keyed by content rather than by call order.
+
+        Built on stable_hash for the reason given there: an RNG stream would
+        also depend on how many points were requested and in what order, so the
+        same entity would jitter differently between a coarse and a fine query.
+        """
+        return stable_hash(str(self.seed), *(str(k) for k in key)) / 2.0**64
 
     def _wiggle(self, t: np.ndarray, amplitude: float, *key: Any) -> np.ndarray:
         """Smooth pseudo-noise: a few incommensurate sinusoids.

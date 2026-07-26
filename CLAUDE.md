@@ -76,7 +76,7 @@ These bind every component, not just metrics.
 
 | Component | Status | Notes |
 |---|---|---|
-| Metrics tools | **built** | `metric_analysis/`, 15 tests |
+| Metrics tools | **built** | `metric_analysis/`, 17 tests |
 | Change log tool | **next** | rollouts, config, flags, capacity ops |
 | Topology tool | not built | dependency graph; without it you can't get from a frontend symptom to a backend cause |
 | Log tools | not built | template clustering, frequency diffs |
