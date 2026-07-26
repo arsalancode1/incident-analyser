@@ -14,6 +14,7 @@ from .attribution import (
     attribute_ratio,
     explain_delta,
 )
+from .brief import build_brief, render_brief
 from .catalog import DEMO_FLEET, MetricCatalog, MetricSpec, demo_catalog
 from .changepoint import ChangePoint, classify_shape, detect_change_point
 from .summarize import peer_outliers, summarize_series
@@ -39,11 +40,13 @@ __all__ = [
     "Window",
     "attribute_additive",
     "attribute_ratio",
+    "build_brief",
     "classify_shape",
     "demo_catalog",
     "detect_change_point",
     "explain_delta",
     "peer_outliers",
+    "render_brief",
     "stable_hash",
     "summarize_series",
 ]

@@ -263,6 +263,97 @@ def _():
         assert t.evidence.get(res["evidence_id"]) is not None
 
 
+# ------------------------------------------------------- stage-1 brief
+@check("brief locates the injected incident and pins the onset")
+def _():
+    from metric_analysis.brief import build_brief
+
+    onset = NOW - 40 * 60
+    t = tools(fault_start=onset, rollout_start=onset)
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    assert b["confidence"] == "high", b["confidence"]
+    loc = b["location"]["narrowed_to"]
+    assert loc["region"] == "eu-west-4" and loc["cell"] == "fb", loc
+    assert abs(b["onset"]["timestamp"] - onset) <= 60, b["onset"]
+    # The headline must read region/cell, not whichever dimension attribution
+    # happened to commit to first.
+    assert "eu-west-4/fb" in b["headline"], b["headline"]
+
+
+@check("brief refuses to attribute a flat metric")
+def _():
+    from metric_analysis.brief import build_brief
+
+    # No fault injected. explain_delta would still hand back a slice owning most
+    # of the noise; naming it would be the single most damaging thing this
+    # component can do, so the gate must stop before attribution runs.
+    t = tools()
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    assert b["materiality"]["material"] is False, b["materiality"]
+    assert b["location"]["narrowed_to"] is None, b["location"]
+    assert b["onset"] is None
+    assert b["confidence"].startswith("none"), b["confidence"]
+    skipped = {n["source"] for n in b["not_checked"]}
+    assert {"explain_delta", "find_onset", "correlation_scan"} <= skipped, skipped
+
+
+@check("every brief finding cites a resolvable evidence id")
+def _():
+    from metric_analysis.brief import build_brief
+
+    onset = NOW - 40 * 60
+    t = tools(fault_start=onset, rollout_start=onset)
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    assert b["findings"]
+    for f in b["findings"]:
+        ids = [e for e in f["evidence"] if e]
+        assert ids, f"finding cites nothing: {f['statement']}"
+        for eid in ids:
+            assert t.evidence.get(eid) is not None, f"dangling evidence id {eid}"
+
+
+@check("brief degrades instead of dying when the budget runs out")
+def _():
+    from metric_analysis.brief import build_brief
+
+    onset = NOW - 40 * 60
+    # Losing the whole brief during a P0 because one query blew a budget is the
+    # wrong trade; the sweep absorbs the failure and records it.
+    t = MetricTools(
+        demo_catalog(),
+        SyntheticTSDB(seed=3, fault_start=onset, rollout_start=onset),
+        budget=Budget(max_queries=1),
+    )
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    reasons = " ".join(n["consequence"] for n in b["not_checked"])
+    assert "budget_exceeded" in reasons, reasons
+    assert b["headline"]
+
+
+@check("brief output is JSON-clean and free of raw point arrays")
+def _():
+    import json
+
+    from metric_analysis.brief import build_brief, render_brief
+
+    onset = NOW - 40 * 60
+    t = tools(fault_start=onset, rollout_start=onset)
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    s = json.dumps(b, default=str)
+    assert "NaN" not in s and "Infinity" not in s
+    assert isinstance(render_brief(b), str)
+
+    def scan(node):
+        if isinstance(node, dict):
+            return sum(scan(v) for v in node.values())
+        if isinstance(node, list):
+            nums = sum(1 for x in node if isinstance(x, (int, float)))
+            return (1 if nums > 8 else 0) + sum(scan(v) for v in node)
+        return 0
+
+    assert scan(b) == 0, "brief leaked an array of raw points"
+
+
 if __name__ == "__main__":
     for name in PASSED:
         print(f"  PASS  {name}")

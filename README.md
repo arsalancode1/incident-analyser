@@ -4,8 +4,9 @@ The metrics tool family for the incident debugging agent. No LLM anywhere in
 here — this is the deterministic layer the orchestrator calls into.
 
 ```
-python3 test_metric_analysis.py     # 17 tests
+python3 test_metric_analysis.py     # 22 tests
 python3 demo_investigation.py       # end-to-end on a synthetic incident
+python3 demo_brief.py               # stage-1 brief: a bad rollout, and a healthy fleet
 ```
 
 ## Layout
@@ -19,6 +20,7 @@ python3 demo_investigation.py       # end-to-end on a synthetic incident
 | `summarize.py` | Series → ~25 tokens; peer outlier ranking |
 | `attribution.py` | `explain_delta`: additive and exact ratio decomposition |
 | `tools.py` | Agent-facing surface: validation, budgets, cache, evidence ledger |
+| `brief.py` | Stage-1 auto-generated incident brief: fixed sweep, no reasoning |
 
 ## Agent-facing tools
 
