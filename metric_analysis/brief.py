@@ -110,7 +110,17 @@ def build_brief(
         lambda: tools.series_summary(symptom_metric, {}, incident, baseline),
     )
 
-    # -- 3. how wide is it ------------------------------------------------
+    # -- 3. the other golden signals --------------------------------------
+    # The page names one metric, but that metric is one view of the service.
+    # Errors can be flat while traffic collapses, and a brief anchored only on
+    # the paged metric would report "errors normal" and miss the outage. Each
+    # signal is checked on its own terms rather than for correlation with the
+    # symptom, so an independent problem is still visible.
+    signals = _golden_signal_sweep(
+        tools, sweep, symptom_metric, incident, baseline, min_delta_pct
+    )
+
+    # -- 4. how wide is it ------------------------------------------------
     # Runs before attribution and unfiltered, for two reasons. A small cell on
     # fire can be invisible in a fleet-wide aggregate, so peer deviation is part
     # of deciding whether anything happened at all; and filtering peers by the
@@ -121,7 +131,7 @@ def build_brief(
         lambda: tools.peer_comparison(symptom_metric, peer_field, incident),
     )
 
-    # -- 4. did anything actually happen? ---------------------------------
+    # -- 5. did anything actually happen? ---------------------------------
     # The gate that stops the most dangerous output this component can produce.
     # explain_delta decomposes whatever delta it is given, and explanatory power
     # is a *share* of that delta -- so on a flat metric some slice still owns
@@ -145,6 +155,7 @@ def build_brief(
                 peers=peers,
                 peer_field=peer_field,
                 correlated=None,
+                signals=signals,
                 materiality=materiality,
                 sweep=sweep,
                 tools=tools,
@@ -152,7 +163,7 @@ def build_brief(
             now,
         )
 
-    # -- 5. which slice moved it ------------------------------------------
+    # -- 6. which slice moved it ------------------------------------------
     attribution = (
         sweep.run(
             "explain_delta",
@@ -169,14 +180,14 @@ def build_brief(
     # single most valuable fact in the brief.
     slice_filter = {k: v for k, v in narrowed.items() if k in (peer_field, "region", "cell")}
 
-    # -- 6. when did it start ---------------------------------------------
+    # -- 7. when did it start ---------------------------------------------
     onset = sweep.run(
         "find_onset",
         lambda: tools.find_onset(symptom_metric, slice_filter, scan_window),
     )
     onset_ts = ((onset or {}).get("onset") or {}).get("timestamp")
 
-    # -- 7. what else moved at that moment --------------------------------
+    # -- 8. what else moved at that moment --------------------------------
     correlated = None
     if onset_ts is not None:
         correlated = sweep.run(
@@ -202,6 +213,7 @@ def build_brief(
             peers=peers,
             peer_field=peer_field,
             correlated=correlated,
+            signals=signals,
             materiality=materiality,
             sweep=sweep,
             tools=tools,
@@ -214,6 +226,56 @@ def _finish(brief: dict[str, Any], now: float | None) -> dict[str, Any]:
     if now is not None:
         brief["generated_at"] = _utc(now)
     return brief
+
+
+def _golden_signal_sweep(
+    tools: MetricTools,
+    sweep: _Sweep,
+    symptom_metric: str,
+    incident: Window,
+    baseline: Window,
+    min_delta_pct: float,
+) -> list[dict[str, Any]]:
+    """Check every golden signal fleet-wide, not just the one that paged.
+
+    One cheap `series_summary` per signal. Deliberately shallower than the
+    symptom's gate -- no peer comparison, so a signal qualifies on a change point
+    or a delta past the floor. The symptom earns the deeper check because it is
+    the metric that will be attributed; the others only need to answer "is this
+    also abnormal", and paying four peer queries to sharpen an answer nobody
+    drills into is not worth the fan-out during a P0.
+
+    A signal whose query fails is reported as unknown rather than healthy. This
+    is invariant 1 in a different costume: silence must never read as normal.
+    """
+    out: list[dict[str, Any]] = []
+    for signal, metrics in tools.catalog.golden_signals().items():
+        for metric in metrics:
+            summary = sweep.run(
+                f"golden_signal:{signal}",
+                lambda m=metric: tools.series_summary(m, {}, incident, baseline),
+            )
+            if summary is None:
+                out.append(
+                    {"signal": signal, "metric": metric, "material": None,
+                     "is_symptom": metric == symptom_metric,
+                     "note": "query failed; treated as unknown, not healthy"}
+                )
+                continue
+            top = (summary.get("series") or [{}])[0]
+            verdict = _materiality(summary, None, min_delta_pct)
+            out.append(
+                {
+                    "signal": signal,
+                    "metric": metric,
+                    "material": verdict["material"],
+                    "delta_pct": top.get("delta_pct"),
+                    "shape": top.get("shape"),
+                    "is_symptom": metric == symptom_metric,
+                    "evidence_id": summary.get("evidence_id"),
+                }
+            )
+    return out
 
 
 def _materiality(
@@ -270,6 +332,7 @@ def _assemble(
     peers: dict[str, Any] | None,
     peer_field: str,
     correlated: dict[str, Any] | None,
+    signals: list[dict[str, Any]],
     materiality: dict[str, Any],
     sweep: _Sweep,
     tools: MetricTools,
@@ -419,6 +482,26 @@ def _assemble(
                 f"{quiet} of {scanned} scanned metrics showed no significant change near onset."
             )
 
+    # -- other golden signals ---------------------------------------------
+    others = [s for s in signals if not s["is_symptom"]]
+    for sig in [s for s in others if s["material"]]:
+        findings.append(
+            {
+                "kind": "golden_signal",
+                "statement": (
+                    f"{sig['signal']} ({sig['metric']}) is also independently material: "
+                    f"{sig['delta_pct']:+.0f}% fleet-wide, {sig['shape']}."
+                ),
+                "evidence": [sig["evidence_id"]],
+            }
+        )
+    quiet = [s["signal"] for s in others if not s["material"]]
+    if quiet:
+        # Negative signal results are worth as much as positive ones here: "the
+        # other three signals are normal" is what separates a contained fault
+        # from the early edge of a general outage.
+        ruled_out.append(f"No material fleet-wide movement in: {', '.join(quiet)}.")
+
     # -- confidence -------------------------------------------------------
     # An immaterial change is not low confidence in a conclusion; there is no
     # conclusion. Saying "none" rather than "low" keeps the brief from reading
@@ -455,6 +538,7 @@ def _assemble(
         "materiality": materiality,
         "onset": {"timestamp": _r(onset_ts, 1), "utc": _utc(onset_ts)} if onset_ts else None,
         "location": {"narrowed_to": narrowed or None, "spans": spans or None},
+        "golden_signals": signals,
         "blast_radius": blast or None,
         "correlated_changes": changes,
         "findings": findings,
@@ -547,6 +631,20 @@ def render_brief(brief: dict[str, Any]) -> str:
     if not brief["findings"]:
         L.append("  • Nothing conclusive. The sweep completed but found no significant signal.")
     L.append("")
+
+    if brief.get("golden_signals"):
+        L.append("GOLDEN SIGNALS (fleet-wide, each judged on its own terms)")
+        for s in brief["golden_signals"]:
+            mark = {True: "MOVED ", False: "  ok  ", None: "  ??  "}[s["material"]]
+            tag = "  <- paged on this" if s["is_symptom"] else ""
+            if s["material"] is None:
+                L.append(f"  [{mark}] {s['signal']:<11} {s['metric']}: {s['note']}{tag}")
+            else:
+                L.append(
+                    f"  [{mark}] {s['signal']:<11} {s['metric']}: "
+                    f"{s['delta_pct']:+.1f}% ({s['shape']}){tag}"
+                )
+        L.append("")
 
     if brief["correlated_changes"]:
         L.append("MOVED AT THE SAME TIME (correlation, not causation)")

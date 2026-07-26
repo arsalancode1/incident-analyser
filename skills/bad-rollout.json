@@ -1,0 +1,30 @@
+{
+  "id": "bad-rollout",
+  "version": 1,
+  "title": "Version-correlated regression after a rollout",
+  "incident_class": "bad_rollout",
+  "match": {
+    "symptom_metrics": ["spanner.rpc.errors", "spanner.rpc.latency"],
+    "material_signals": ["errors"],
+    "shapes": ["step_up"],
+    "narrowed_dimensions": ["version"],
+    "correlated_metrics": ["spanner.task.restarts"]
+  },
+  "tell": [
+    "Onset is a step, not a ramp: a build either has the defect or it does not, so the transition is as fast as the rollout reaches each task.",
+    "The change concentrates on a version label rather than on a region or cell, and the affected cells are exactly those the rollout has reached.",
+    "Traffic is flat across the onset. A rollout changes how requests are served, not how many arrive.",
+    "Jobs sharing the rolled binary degrade together while co-located jobs on the old build stay healthy, which is what distinguishes this from a cell-wide fault."
+  ],
+  "confusable_with": [
+    {
+      "class": "cell_infrastructure_fault",
+      "discriminator": "A cell fault hits every job in the cell including ones the rollout never touched. Check whether an un-rolled job in the same cell is also degraded."
+    },
+    {
+      "class": "coincidental_timing",
+      "discriminator": "A rollout landing near onset is not proof. The claim only holds if un-rolled cells show no onset; if they do, the rollout is a bystander."
+    }
+  ],
+  "provenance": {"postmortem": "internal/pm-2041", "author": "sre-storage", "added": "2026-03-11"}
+}

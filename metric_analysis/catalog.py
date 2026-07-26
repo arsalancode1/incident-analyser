@@ -21,6 +21,10 @@ from typing import Any
 
 from .types import ToolError
 
+# Fixed order so the sweep is deterministic and reads the way an engineer scans
+# a dashboard: what is broken, how slow, how much load, how full.
+GOLDEN_SIGNALS = ("errors", "latency", "traffic", "saturation")
+
 # The synthetic fleet's vocabulary. `SyntheticTSDB` imports this rather than
 # keeping its own copy: if the catalog and the TSDB disagree about what exists,
 # invariant 1 becomes untestable -- a filter the catalog accepts would come back
@@ -52,6 +56,11 @@ class MetricSpec:
     interpretation: str = ""
     denominator: str | None = None
     percentile: str | None = None
+    # Which of the four golden signals this metric represents, if any. Most
+    # metrics are None: `spanner.tablet.split_rate` is diagnostic detail, not a
+    # signal you would page on. Only the handful that describe service health
+    # from the outside get a role here.
+    golden_signal: str | None = None
 
     @property
     def aggregation(self) -> str:
@@ -143,6 +152,19 @@ class MetricCatalog:
             n *= 1 if g in filters else max(1, len(spec.fields.get(g, [])))
         return n
 
+    def golden_signals(self) -> dict[str, list[str]]:
+        """Signal role -> metrics carrying it, in GOLDEN_SIGNALS order.
+
+        A signal can legitimately map to several metrics in a real fleet (two
+        serving paths, two error counters), so this is a list per signal rather
+        than one name.
+        """
+        out: dict[str, list[str]] = {}
+        for spec in self._specs.values():
+            if spec.golden_signal:
+                out.setdefault(spec.golden_signal, []).append(spec.name)
+        return {sig: sorted(out[sig]) for sig in GOLDEN_SIGNALS if sig in out}
+
     def search(self, intent: str, limit: int = 10) -> list[dict[str, Any]]:
         """Keyword matching standing in for a vector index (see 'Known gaps').
 
@@ -197,6 +219,7 @@ def demo_catalog() -> MetricCatalog:
                 ),
                 fields=_f("region", "cell", "job", "task", "version"),
                 denominator="spanner.rpc.count",
+                golden_signal="errors",
             ),
             MetricSpec(
                 name="spanner.rpc.count",
@@ -209,6 +232,7 @@ def demo_catalog() -> MetricCatalog:
                     "hour-over-hour for judging whether a move is real."
                 ),
                 fields=_f("region", "cell", "job", "task", "version"),
+                golden_signal="traffic",
             ),
             MetricSpec(
                 name="spanner.rpc.latency",
@@ -223,6 +247,7 @@ def demo_catalog() -> MetricCatalog:
                 ),
                 fields=_f("region", "cell", "job", "task", "version"),
                 percentile="p99",
+                golden_signal="latency",
             ),
             MetricSpec(
                 name="spanner.paxos.leader_elections",
@@ -248,6 +273,7 @@ def demo_catalog() -> MetricCatalog:
                     "and latency together, contention shows up here first."
                 ),
                 fields=_f("region", "cell", "job"),
+                golden_signal="saturation",
             ),
             MetricSpec(
                 name="spanner.tablet.split_rate",

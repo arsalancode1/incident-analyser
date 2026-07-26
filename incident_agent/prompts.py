@@ -82,9 +82,39 @@ Reply with JSON only:
 """
 
 
-def opening_message(brief_json: str, symptom_metric: str, budget_note: str) -> str:
+def priors_section(priors_json: str | None) -> str:
+    """Skills are offered as priors, never as instructions.
+
+    The wording matters more than it looks. A retrieved note that reads as
+    guidance turns into a procedure the model follows, which rebuilds the
+    playbook by the back door -- and worse, a *confidently followed* playbook
+    for the wrong incident class. Framing them as things that resembled this
+    once, explicitly discardable, is what keeps them priors.
+    """
+    if not priors_json:
+        return ""
+    return f"""
+
+Engineers have written notes about incident classes that presented like this \
+one. They were retrieved by symptom match, they are not instructions, and they \
+may be wrong here -- one describes an incident class you should be actively \
+trying to rule out, not confirm. Each lists what it is commonly confused with \
+and how to tell the difference; that discriminator is usually the most useful \
+part.
+
+```json
+{priors_json}
+```
+
+If none of them fit, say so and investigate from the evidence.
+"""
+
+
+def opening_message(
+    brief_json: str, symptom_metric: str, budget_note: str, priors_json: str | None = None
+) -> str:
     return f"""\
-A page fired on `{symptom_metric}`.
+A page fired on `{symptom_metric}`.{priors_section(priors_json)}
 
 The fixed opening sweep has already run. Its output, entirely deterministic tool \
 results with no reasoning applied:

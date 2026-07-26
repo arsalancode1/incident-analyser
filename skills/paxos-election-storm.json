@@ -1,0 +1,27 @@
+{
+  "id": "paxos-election-storm",
+  "version": 1,
+  "title": "Paxos leader election storm versus network partition",
+  "incident_class": "leader_election_storm",
+  "match": {
+    "symptom_metrics": ["spanner.rpc.errors", "spanner.rpc.latency"],
+    "correlated_metrics": ["spanner.paxos.leader_elections"],
+    "shapes": ["step_up", "spike"]
+  },
+  "tell": [
+    "Leader elections spike while request volume stays flat. Load-driven incidents move both together.",
+    "Elections lead the user-visible errors by a minute or two, because replicas lose leases before clients notice failures.",
+    "Latency degrades before error rate does: requests queue behind an absent leader before they fail outright."
+  ],
+  "confusable_with": [
+    {
+      "class": "network_partition",
+      "discriminator": "Under a partition, heartbeat_rtt p50 stays normal while p99 does not, because most packets are unaffected and a subset is black-holed. In an election storm both percentiles stay normal and the elections themselves are the anomaly."
+    },
+    {
+      "class": "task_crash_loop",
+      "discriminator": "A crash loop shows restarts climbing alongside elections. Elections rising with flat restarts points at lease expiry rather than processes dying."
+    }
+  ],
+  "provenance": {"postmortem": "internal/pm-1887", "author": "sre-consensus", "added": "2026-01-22"}
+}

@@ -316,6 +316,99 @@ def _():
     assert o[3]["role"] == "tool" and o[3]["tool_call_id"] == "t1"
 
 
+# ------------------------------------------------------------------ skills
+@check("a skill that encodes steps is rejected at load")
+def _():
+    from incident_agent.skills import SkillError, load_skill
+
+    base = {"id": "x", "title": "t", "incident_class": "c"}
+    # The whole architecture exists to avoid playbooks; a skill smuggling one in
+    # would reintroduce maintenance that scales with failure modes.
+    for bad in ("Step 1: check the error rate.",
+                "1. Look at elections.",
+                "Then run peer_comparison on the cell."):
+        try:
+            load_skill({**base, "tell": [bad]})
+            raise AssertionError(f"should have rejected: {bad}")
+        except SkillError as e:
+            assert "procedure" in str(e), e
+    # Declarative prose using the same words must still load.
+    ok = load_skill({**base, "tell": [
+        "Elections spike while QPS stays flat, and latency degrades before errors do."]})
+    assert ok.tell
+
+
+@check("a skill with an unknown field is rejected")
+def _():
+    from incident_agent.skills import SkillError, load_skill
+
+    try:
+        load_skill({"id": "x", "title": "t", "incident_class": "c", "steps": ["do a thing"]})
+        raise AssertionError("should have raised")
+    except SkillError as e:
+        assert "unknown fields" in str(e)
+
+
+@check("retrieval ranks the matching incident class first, with reasons")
+def _():
+    from incident_agent.skills import retrieve
+    from metric_analysis.brief import build_brief
+
+    t = tools()
+    b = build_brief(t, "spanner.rpc.errors", INCIDENT, Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    priors = retrieve(b)
+    assert priors, "expected priors for a version-correlated step change"
+    assert priors[0]["skill"] == "bad-rollout@v1", [p["skill"] for p in priors]
+    assert priors[0]["matched_because"], priors[0]
+    # Competing classes must still surface -- a single prior is tunnel vision
+    # with citations attached.
+    assert len(priors) > 1, priors
+
+
+@check("retrieval degrades to nothing rather than forcing a match")
+def _():
+    from incident_agent.skills import retrieve
+
+    # A brief with no material signals and no location should match nothing.
+    empty = {"symptom_metric": "spanner.storage.read_bytes", "golden_signals": [],
+             "correlated_changes": [], "location": {"narrowed_to": None, "spans": None}}
+    assert retrieve(empty) == []
+
+
+@check("priors reach the model as priors, and land in the replay record")
+def _():
+    model = ScriptedModel([conclude_call(hypotheses=[])])
+    inv = investigate(tools(), model, "spanner.rpc.errors", INCIDENT)
+    assert inv.priors and inv.to_dict()["priors"] == [p["skill"] for p in inv.priors]
+    prompt = model.calls[0]["messages"][0]["content"][0]["text"]
+    assert "bad-rollout" in prompt
+    # Framing is the guardrail: a note that reads as guidance becomes a
+    # procedure the model follows.
+    assert "not instructions" in prompt
+    assert "may be wrong here" in prompt
+
+
+@check("skills can be supplied explicitly, including none at all")
+def _():
+    model = ScriptedModel([conclude_call(hypotheses=[])])
+    inv = investigate(tools(), model, "spanner.rpc.errors", INCIDENT, skills=[])
+    assert inv.priors == []
+    prompt = model.calls[0]["messages"][0]["content"][0]["text"]
+    assert "bad-rollout" not in prompt
+
+
+@check("the shipped skill library loads and is well formed")
+def _():
+    from incident_agent.skills import load_skills
+
+    skills = load_skills()
+    assert len(skills) >= 3, len(skills)
+    for s in skills:
+        assert s.tell, f"{s.id} has no observations"
+        assert s.confusable_with, f"{s.id} names nothing it is confused with"
+        assert s.provenance.get("postmortem"), f"{s.id} has no provenance"
+
+
 if __name__ == "__main__":
     for name in PASSED:
         print(f"  PASS  {name}")

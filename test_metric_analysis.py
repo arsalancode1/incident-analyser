@@ -263,6 +263,48 @@ def _():
         assert t.evidence.get(res["evidence_id"]) is not None
 
 
+# ------------------------------------------------------- golden signals
+@check("every golden signal is checked, not just the one that paged")
+def _():
+    from metric_analysis.brief import build_brief
+
+    onset = NOW - 40 * 60
+    t = tools(fault_start=onset, rollout_start=onset)
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    got = {s["signal"]: s for s in b["golden_signals"]}
+    assert set(got) == {"errors", "latency", "traffic", "saturation"}, set(got)
+    assert got["errors"]["is_symptom"] is True
+    assert got["traffic"]["is_symptom"] is False
+    # Each signal is judged on its own terms, so a signal that did not move is
+    # explicitly reported rather than omitted.
+    assert got["traffic"]["material"] is False, got["traffic"]
+    assert any("No material fleet-wide movement" in r for r in b["ruled_out"]), b["ruled_out"]
+
+
+@check("a non-symptom golden signal that moves gets its own finding")
+def _():
+    from metric_analysis.brief import build_brief
+
+    onset = NOW - 40 * 60
+    t = tools(fault_start=onset, rollout_start=onset)
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    gs = [f for f in b["findings"] if f["kind"] == "golden_signal"]
+    assert gs, [f["kind"] for f in b["findings"]]
+    # saturation (lock wait) rises with the injected fault; it must be surfaced
+    # even though the page fired on errors.
+    assert any("saturation" in f["statement"] for f in gs), [f["statement"] for f in gs]
+    for f in gs:
+        assert f["evidence"][0] and t.evidence.get(f["evidence"][0]) is not None
+
+
+@check("catalog maps golden signals in a fixed order")
+def _():
+    sig = demo_catalog().golden_signals()
+    assert list(sig) == ["errors", "latency", "traffic", "saturation"], list(sig)
+    assert sig["errors"] == ["spanner.rpc.errors"]
+    assert sig["traffic"] == ["spanner.rpc.count"]
+
+
 # ------------------------------------------------------- stage-1 brief
 @check("brief locates the injected incident and pins the onset")
 def _():

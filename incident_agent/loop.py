@@ -31,6 +31,7 @@ from .dispatch import Dispatcher, ToolInvocation
 from .models import ModelClient, assistant_turn, tool_results, user_text
 from .prompts import SYSTEM_PROMPT, opening_message
 from .schemas import TOOL_SCHEMAS
+from .skills import Skill, retrieve
 
 SCHEMA_VERSION = 1
 
@@ -43,6 +44,7 @@ class Investigation:
     windows: dict[str, Any]
     brief: dict[str, Any]
     model: str
+    priors: list[dict[str, Any]] = field(default_factory=list)
     transcript: list[dict[str, Any]] = field(default_factory=list)
     invocations: list[ToolInvocation] = field(default_factory=list)
     conclusion: dict[str, Any] | None = None
@@ -63,6 +65,10 @@ class Investigation:
             "usage": self.usage,
             "tool_budget": self.tool_budget,
             "brief": self.brief,
+            # Which notes fired, by id and version. A change in the skill
+            # library must be visible in eval results, not an invisible confound.
+            "priors": [p["skill"] for p in self.priors],
+            "priors_detail": self.priors,
             "conclusion": self.conclusion,
             "verification": self.verification,
             "invocations": [i.to_dict() for i in self.invocations],
@@ -80,6 +86,7 @@ def investigate(
     max_turns: int = 10,
     max_tool_calls: int = 25,
     verifier: ModelClient | None = None,
+    skills: list[Skill] | None = None,
 ) -> Investigation:
     """Run an investigation. Never raises on model or tool misbehaviour.
 
@@ -101,12 +108,24 @@ def investigate(
         model=getattr(model, "name", "unknown"),
     )
 
+    # Priors come from the brief, so they are matched against evidence rather
+    # than against the symptom name alone. Retrieval is deterministic; an empty
+    # result is an ordinary outcome and the agent proceeds unchanged.
+    inv.priors = retrieve(brief, skills)
+
     dispatcher = Dispatcher(tools=tools, windows=windows)
     budget_note = (
         f"You have at most {max_turns} turns and {max_tool_calls} tool calls."
     )
     messages: list[dict[str, Any]] = [
-        user_text(opening_message(json.dumps(brief, indent=2, default=str), symptom_metric, budget_note))
+        user_text(
+            opening_message(
+                json.dumps(brief, indent=2, default=str),
+                symptom_metric,
+                budget_note,
+                json.dumps(inv.priors, indent=2, default=str) if inv.priors else None,
+            )
+        )
     ]
 
     seen_calls: set[str] = set()

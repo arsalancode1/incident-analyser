@@ -76,7 +76,7 @@ These bind every component, not just metrics.
 
 | Component | Status | Notes |
 |---|---|---|
-| Metrics tools | **built** | `metric_analysis/`, 22 tests |
+| Metrics tools | **built** | `metric_analysis/`, 25 tests; golden signals swept per-signal |
 | Stage-1 brief | **built** | `brief.py`; fixed sweep, materiality gate, no reasoning |
 | Change log tool | **next** | rollouts, config, flags, capacity ops |
 | Topology tool | not built | dependency graph; without it you can't get from a frontend symptom to a backend cause |
@@ -84,7 +84,7 @@ These bind every component, not just metrics.
 | Trace tools | not built | exemplars linked from latency buckets, span diffs |
 | Harness | **built** | `incident_agent/`; loop control, dispatch, schemas, circuit breakers, replay record |
 | Orchestrator | **built** | `incident_agent/`; system prompt, `conclude` schema, verifier pass |
-| Skills | not built | incident-class priors contributed post-postmortem |
+| Skills | **built** | `skills/*.json` + `incident_agent/skills.py`; declarative, deterministic retrieval |
 | Eval harness | not built | replay over historical incidents, frozen snapshots |
 
 Rough effort split: 80% harness and tools, 15% skills, 5% agent. Teams routinely

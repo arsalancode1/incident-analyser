@@ -1,0 +1,25 @@
+{
+  "id": "hot-shard-contention",
+  "version": 1,
+  "title": "Lock contention on a hot key range versus capacity exhaustion",
+  "incident_class": "hot_shard",
+  "match": {
+    "symptom_metrics": ["spanner.rpc.latency", "spanner.rpc.errors"],
+    "material_signals": ["latency", "saturation"],
+    "correlated_metrics": ["spanner.lock.wait_time", "spanner.tablet.split_rate"],
+    "narrowed_dimensions": ["cell"]
+  },
+  "tell": [
+    "Lock wait time rises sharply while traffic is flat or only mildly elevated, which separates contention from load.",
+    "The split rate climbs as the balancer reacts to the hot range. That is the system responding to imbalance, not causing it.",
+    "Contention concentrates on a small number of cells rather than tracking regional traffic weight, because a hot key lives in one range.",
+    "ABORTED responses dominate the error mix; those are retried by clients and may not be user-visible even while the metric looks alarming."
+  ],
+  "confusable_with": [
+    {
+      "class": "capacity_exhaustion",
+      "discriminator": "Capacity problems raise latency and CPU together and scale with traffic. Contention raises lock wait first and is largely indifferent to request volume."
+    }
+  ],
+  "provenance": {"postmortem": "internal/pm-2103", "author": "sre-storage", "added": "2026-05-02"}
+}
