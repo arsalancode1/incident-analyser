@@ -82,8 +82,8 @@ These bind every component, not just metrics.
 | Topology tool | not built | dependency graph; without it you can't get from a frontend symptom to a backend cause |
 | Log tools | not built | template clustering, frequency diffs |
 | Trace tools | not built | exemplars linked from latency buckets, span diffs |
-| Harness | not built | loop control, dispatch, evidence ledger, replay |
-| Orchestrator | not built | prompts, sub-agents, output schema |
+| Harness | **built** | `incident_agent/`; loop control, dispatch, schemas, circuit breakers, replay record |
+| Orchestrator | **built** | `incident_agent/`; system prompt, `conclude` schema, verifier pass |
 | Skills | not built | incident-class priors contributed post-postmortem |
 | Eval harness | not built | replay over historical incidents, frozen snapshots |
 
@@ -129,7 +129,11 @@ meet, and the first confidently wrong output turns the name into a joke.
 - Comments explain *why*, especially where a guardrail looks paranoid. When you
   add a guardrail, record the bug that motivated it — that's what stops a future
   session deleting it for tidier output.
-- Run `python3 test_metric_analysis.py` before reporting a change complete.
+- Run `python3 test_metric_analysis.py` and `python3 test_incident_agent.py` before
+  reporting a change complete.
+- The metrics package has no LLM in it and must not acquire one. Model access
+  lives in `incident_agent/`, behind a provider-agnostic `ModelClient`; SDKs are
+  imported lazily so numpy stays the only hard dependency.
 
 ## Further context
 

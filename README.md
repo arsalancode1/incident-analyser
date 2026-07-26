@@ -7,6 +7,8 @@ here — this is the deterministic layer the orchestrator calls into.
 python3 test_metric_analysis.py     # 22 tests
 python3 demo_investigation.py       # end-to-end on a synthetic incident
 python3 demo_brief.py               # stage-1 brief: a bad rollout, and a healthy fleet
+python3 test_incident_agent.py      # 18 tests, agent harness, no network needed
+python3 demo_agent.py               # the agent loop (scripted model, no API key)
 ```
 
 ## Layout
