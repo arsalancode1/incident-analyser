@@ -1,0 +1,297 @@
+{
+  "version": 1,
+  "golden_signals": [
+    "errors",
+    "latency",
+    "traffic",
+    "saturation"
+  ],
+  "metrics": [
+    {
+      "name": "spanner.lock.wait_time",
+      "kind": "gauge",
+      "unit": "ms",
+      "description": "Mean time a transaction spends waiting to acquire locks.",
+      "interpretation": "Rises with write contention on a hot key range. Distinguishes a contention incident from a capacity one: capacity shows up in CPU and latency together, contention shows up here first.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "job": [
+          "frontend",
+          "txn-coordinator",
+          "tablet-server"
+        ]
+      },
+      "golden_signal": "saturation"
+    },
+    {
+      "name": "spanner.paxos.leader_elections",
+      "kind": "counter",
+      "unit": "elections",
+      "description": "Paxos leader elections started by a tablet replica.",
+      "interpretation": "A steady low rate is normal rebalancing. A spike means replicas are losing leases: usually a task restarting, a network partition, or a machine going away. Frequently precedes user-visible errors by a minute or two, which makes it useful in a correlation scan.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "task": [
+          "000",
+          "001",
+          "002",
+          "003",
+          "004",
+          "005",
+          "006",
+          "007"
+        ]
+      }
+    },
+    {
+      "name": "spanner.rpc.count",
+      "kind": "counter",
+      "unit": "requests",
+      "description": "All Spanner RPCs accepted by a serving task, any status.",
+      "interpretation": "The denominator for error and retry rates, and the traffic signal in its own right. Strongly diurnal, so week-over-week beats hour-over-hour for judging whether a move is real.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "job": [
+          "frontend",
+          "txn-coordinator",
+          "tablet-server"
+        ],
+        "task": [
+          "000",
+          "001",
+          "002",
+          "003",
+          "004",
+          "005",
+          "006",
+          "007"
+        ],
+        "version": [
+          "v2.40",
+          "v2.41"
+        ]
+      },
+      "golden_signal": "traffic"
+    },
+    {
+      "name": "spanner.rpc.errors",
+      "kind": "counter",
+      "unit": "errors",
+      "description": "Spanner RPCs that terminated with a non-OK status, counted at the serving task. Includes ABORTED from lock contention, which is usually retried by the client and is not always user-visible.",
+      "interpretation": "Divide by spanner.rpc.count for an error rate; the absolute count tracks traffic and will follow the diurnal cycle on its own. A rise in rate with flat spanner.rpc.count is a serving problem; a rise in both is usually load.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "job": [
+          "frontend",
+          "txn-coordinator",
+          "tablet-server"
+        ],
+        "task": [
+          "000",
+          "001",
+          "002",
+          "003",
+          "004",
+          "005",
+          "006",
+          "007"
+        ],
+        "version": [
+          "v2.40",
+          "v2.41"
+        ]
+      },
+      "denominator": "spanner.rpc.count",
+      "golden_signal": "errors"
+    },
+    {
+      "name": "spanner.rpc.latency",
+      "kind": "distribution",
+      "unit": "ms",
+      "description": "Server-side RPC latency distribution, p99 exported.",
+      "interpretation": "p99 moving while p50 stays flat points at a subset of requests or a subset of tasks, not a fleet-wide slowdown. Percentiles are not additive, so explain_delta cannot decompose this metric and falls back to ranking by peer deviation.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "job": [
+          "frontend",
+          "txn-coordinator",
+          "tablet-server"
+        ],
+        "task": [
+          "000",
+          "001",
+          "002",
+          "003",
+          "004",
+          "005",
+          "006",
+          "007"
+        ],
+        "version": [
+          "v2.40",
+          "v2.41"
+        ]
+      },
+      "percentile": "p99",
+      "golden_signal": "latency"
+    },
+    {
+      "name": "spanner.storage.read_bytes",
+      "kind": "counter",
+      "unit": "bytes",
+      "description": "Bytes read from the storage layer to serve queries.",
+      "interpretation": "A jump with flat spanner.rpc.count means queries got more expensive -- a plan change or an index that stopped being used.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "job": [
+          "frontend",
+          "txn-coordinator",
+          "tablet-server"
+        ]
+      }
+    },
+    {
+      "name": "spanner.tablet.split_rate",
+      "kind": "gauge",
+      "unit": "splits/s",
+      "description": "Rate at which the load balancer is splitting tablets.",
+      "interpretation": "Elevated splitting is the system reacting to a hot range. It is a response to load imbalance, not usually a cause of one.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ]
+      }
+    },
+    {
+      "name": "spanner.task.restarts",
+      "kind": "counter",
+      "unit": "restarts",
+      "description": "Task restarts observed by the cluster manager.",
+      "interpretation": "Near zero in steady state, so any sustained non-zero value is worth explaining. Restarts clustered in one cell right after a rollout is the signature of a bad build.",
+      "fields": {
+        "region": [
+          "us-east-1",
+          "us-central-1",
+          "eu-west-4",
+          "asia-east-1"
+        ],
+        "cell": [
+          "aa",
+          "ab",
+          "ba",
+          "bb",
+          "fa",
+          "fb"
+        ],
+        "job": [
+          "frontend",
+          "txn-coordinator",
+          "tablet-server"
+        ],
+        "task": [
+          "000",
+          "001",
+          "002",
+          "003",
+          "004",
+          "005",
+          "006",
+          "007"
+        ],
+        "version": [
+          "v2.40",
+          "v2.41"
+        ]
+      }
+    }
+  ]
+}

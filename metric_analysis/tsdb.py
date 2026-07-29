@@ -203,7 +203,20 @@ class SyntheticTSDB:
 
     def _entities(self, spec: MetricSpec, filters: dict[str, str]) -> list[dict[str, str]]:
         dims = self._dims(spec)
-        pools = [[filters[d]] if d in filters else spec.fields[d] for d in dims]
+        metric_hint = spec.name
+        pools = []
+        for d in dims:
+            if d in filters:
+                pools.append([filters[d]])
+                continue
+            values = spec.fields[d]
+            if values is None:
+                raise ToolError(
+                    "dynamic_field_unsupported",
+                    f"{d!r} on {metric_hint!r} has live-resolved values, which the synthetic "
+                    f"fleet cannot enumerate. Give it explicit values, or point at a real TSDB.",
+                )
+            pools.append(values)
         return [dict(zip(dims, combo)) for combo in itertools.product(*pools)]
 
     def _version_segments(
@@ -427,7 +440,13 @@ class SyntheticTSDB:
         if field not in spec.fields:
             raise ToolError("unknown_field", f"{field!r} is not a tag on {metric!r}.", list(spec.fields))
         if field != "version":
-            return list(spec.fields[field])
+            values = spec.fields[field]
+            if values is None:
+                raise ToolError(
+                    "dynamic_field_unsupported",
+                    f"{field!r} has live-resolved values; the synthetic fleet cannot enumerate it.",
+                )
+            return list(values)
 
         # Versions are resolved against the window, not the schema: which builds
         # were running is a question about time, and the answer is what makes a

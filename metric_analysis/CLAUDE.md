@@ -75,6 +75,31 @@ guard it now; don't weaken them, and don't paper over failures with
 - **Progressive narrowing**, never full-cardinality queries: global → region →
   cell → job → task.
 
+## Configuring the catalog
+
+`demo_catalog()` is a Python fixture because tests need it byte-identical and
+file-free. Real catalogs are JSON under `catalog/`, loaded by
+`config.load_catalog()` — a file or a directory of files, merged in sorted
+order. Adding a metric is a data change, no code and no deploy.
+
+Validate before it reaches an incident: `python3 -m metric_analysis.check catalog/`.
+Validation is strict on purpose. A typo'd `denominator` silently degrades ratio
+attribution to additive on a rate metric, which is correct-looking output with
+wrong arithmetic, and a P0 is the worst time to discover it.
+
+`fields` maps a tag to a list of values or to `null`. A list means "these are
+all of them" and anything else is rejected with suggestions. `null` means
+resolved live via `list_field_values` — correct for task, alloc, instance, where
+a nightly snapshot is stale within minutes and a stale enumeration rejects
+filters that are actually valid. **For `null` fields invariant 1 moves one layer
+down**: the catalog cannot check the value, so `TSDBClient.fetch` must return
+`EMPTY_SELECTOR`. Give dynamic fields a `field_cardinality` hint or the guard
+assumes 1000.
+
+`golden_signals` is configurable and the names are yours — a queueing system
+might add `queue_depth`. Only tag metrics describing health from the outside;
+tagging diagnostic detail means it competes for attention on every incident.
+
 ## Wiring a real TSDB
 
 Implement `TSDBClient.fetch` and `.field_values` (see `tsdb.py`). Two hard

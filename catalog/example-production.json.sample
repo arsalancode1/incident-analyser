@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "golden_signals": ["errors", "latency", "traffic", "saturation", "freshness"],
+  "metrics": [
+    {
+      "name": "myservice.rpc.errors",
+      "kind": "counter",
+      "unit": "errors",
+      "description": "RPCs terminating with a non-OK status, counted at the serving task. Excludes client-side cancellations, which appear in myservice.rpc.cancelled.",
+      "interpretation": "Divide by myservice.rpc.count for a rate; the raw count tracks traffic and follows the diurnal cycle on its own. A rise in rate with flat count is a serving problem; a rise in both is usually load.",
+      "fields": {
+        "region": ["us-east-1", "us-west-2", "eu-west-1"],
+        "cell": ["a", "b", "c"],
+        "job": ["frontend", "backend"],
+        "task": null,
+        "version": null
+      },
+      "field_cardinality": {"task": 5000, "version": 20},
+      "denominator": "myservice.rpc.count",
+      "golden_signal": "errors"
+    },
+    {
+      "name": "myservice.rpc.count",
+      "kind": "counter",
+      "unit": "requests",
+      "description": "All RPCs accepted by a serving task, any status.",
+      "interpretation": "Denominator for error and retry rates, and the traffic signal in its own right. Strongly diurnal, so week-over-week beats hour-over-hour for judging whether a move is real.",
+      "fields": {
+        "region": ["us-east-1", "us-west-2", "eu-west-1"],
+        "cell": ["a", "b", "c"],
+        "job": ["frontend", "backend"],
+        "task": null,
+        "version": null
+      },
+      "field_cardinality": {"task": 5000, "version": 20},
+      "golden_signal": "traffic"
+    },
+    {
+      "name": "myservice.pipeline.lag",
+      "kind": "gauge",
+      "unit": "s",
+      "description": "Age of the newest record the pipeline has finished processing.",
+      "interpretation": "Rises when consumers fall behind producers. Distinguishes a stalled consumer from a slow one: a stall makes this climb linearly with wall clock, whereas a slowdown makes it climb and then plateau at a higher level.",
+      "fields": {
+        "region": ["us-east-1", "us-west-2", "eu-west-1"],
+        "pipeline": null
+      },
+      "field_cardinality": {"pipeline": 200},
+      "golden_signal": "freshness"
+    }
+  ]
+}

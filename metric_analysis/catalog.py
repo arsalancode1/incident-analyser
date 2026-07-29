@@ -52,7 +52,14 @@ class MetricSpec:
     kind: str  # counter | gauge | distribution
     unit: str
     description: str
-    fields: dict[str, list[str]] = field(default_factory=dict)
+    # Tag name -> allowed values, or None for a field whose values are resolved
+    # live. A planet-scale fleet has far too many task names to enumerate in a
+    # nightly snapshot, and a stale enumeration is worse than none: it rejects
+    # filters that are actually valid. For dynamic fields, invariant 1 is
+    # enforced one layer down, by the TSDB returning EMPTY_SELECTOR.
+    fields: dict[str, list[str] | None] = field(default_factory=dict)
+    # Estimates for dynamic fields, used by the cardinality guard.
+    field_cardinality: dict[str, int] = field(default_factory=dict)
     interpretation: str = ""
     denominator: str | None = None
     percentile: str | None = None
@@ -61,6 +68,17 @@ class MetricSpec:
     # signal you would page on. Only the handful that describe service health
     # from the outside get a role here.
     golden_signal: str | None = None
+
+    # Assumed size of a dynamic field when nothing better is configured. High
+    # on purpose: the cardinality guard should refuse an unbounded grouping it
+    # cannot size, not wave it through and discover the blast radius live.
+    DEFAULT_DYNAMIC_CARDINALITY = 1000
+
+    def cardinality_of(self, field_name: str) -> int:
+        values = self.fields.get(field_name)
+        if values is not None:
+            return len(values)
+        return self.field_cardinality.get(field_name, self.DEFAULT_DYNAMIC_CARDINALITY)
 
     @property
     def aggregation(self) -> str:
@@ -81,13 +99,21 @@ class MetricSpec:
             "percentile": self.percentile,
             # Cardinality only. Values come from list_field_values, which reads
             # live -- a catalog snapshot of task names is stale within minutes.
-            "fields": {k: len(v) for k, v in self.fields.items()},
+            "fields": {
+                k: {"cardinality": self.cardinality_of(k), "dynamic": v is None}
+                for k, v in self.fields.items()
+            },
         }
 
 
 class MetricCatalog:
-    def __init__(self, specs: list[MetricSpec]) -> None:
+    def __init__(
+        self, specs: list[MetricSpec], signal_order: tuple[str, ...] = GOLDEN_SIGNALS
+    ) -> None:
         self._specs: dict[str, MetricSpec] = {s.name: s for s in specs}
+        # Configurable so a fleet with its own vocabulary -- "queue_depth",
+        # "freshness" -- can order its own signals without editing code.
+        self.signal_order = tuple(signal_order)
 
     def names(self) -> list[str]:
         return list(self._specs)
@@ -118,6 +144,11 @@ class MetricCatalog:
                     list(spec.fields),
                 )
             allowed = spec.fields[k]
+            if allowed is None:
+                # Values resolved live, so there is no list to check against.
+                # The TSDB must return EMPTY_SELECTOR for a filter matching no
+                # entity -- that contract is what keeps invariant 1 intact here.
+                continue
             if v not in allowed:
                 near = difflib.get_close_matches(v, allowed, n=5, cutoff=0.5)
                 raise ToolError(
@@ -149,7 +180,10 @@ class MetricCatalog:
         spec = self.get(metric)
         n = 1
         for g in group_by:
-            n *= 1 if g in filters else max(1, len(spec.fields.get(g, [])))
+            if g in filters:
+                continue
+            values = spec.fields.get(g)
+            n *= max(1, len(values) if values is not None else spec.cardinality_of(g))
         return n
 
     def golden_signals(self) -> dict[str, list[str]]:
@@ -163,7 +197,12 @@ class MetricCatalog:
         for spec in self._specs.values():
             if spec.golden_signal:
                 out.setdefault(spec.golden_signal, []).append(spec.name)
-        return {sig: sorted(out[sig]) for sig in GOLDEN_SIGNALS if sig in out}
+        ordered = [s for s in self.signal_order if s in out]
+        # Signals configured on a metric but absent from signal_order still
+        # surface, just last -- silently dropping one would be the kind of
+        # quiet omission this project treats as a bug.
+        ordered += sorted(s for s in out if s not in self.signal_order)
+        return {sig: sorted(out[sig]) for sig in ordered}
 
     def search(self, intent: str, limit: int = 10) -> list[dict[str, Any]]:
         """Keyword matching standing in for a vector index (see 'Known gaps').

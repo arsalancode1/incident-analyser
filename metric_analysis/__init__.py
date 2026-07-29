@@ -16,6 +16,7 @@ from .attribution import (
 )
 from .brief import build_brief, render_brief
 from .catalog import DEMO_FLEET, GOLDEN_SIGNALS, MetricCatalog, MetricSpec, demo_catalog
+from .config import CatalogError, catalog_from_dict, catalog_to_dict, load_catalog
 from .changepoint import ChangePoint, classify_shape, detect_change_point
 from .summarize import peer_outliers, summarize_series
 from .tools import Budget, Evidence, MetricTools
@@ -30,6 +31,7 @@ __all__ = [
     "Fault",
     "TrafficShift",
     "Budget",
+    "CatalogError",
     "ChangePoint",
     "Evidence",
     "MetricCatalog",
@@ -49,6 +51,9 @@ __all__ = [
     "overlapping_faults",
     "attribute_ratio",
     "build_brief",
+    "catalog_from_dict",
+    "catalog_to_dict",
+    "load_catalog",
     "classify_shape",
     "demo_catalog",
     "detect_change_point",

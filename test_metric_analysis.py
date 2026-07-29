@@ -263,6 +263,130 @@ def _():
         assert t.evidence.get(res["evidence_id"]) is not None
 
 
+# ------------------------------------------------------ catalog config
+@check("catalog round-trips through config without loss")
+def _():
+    from metric_analysis.config import catalog_from_dict, catalog_to_dict
+
+    original = demo_catalog()
+    data = catalog_to_dict(original)
+    assert catalog_to_dict(catalog_from_dict(data)) == data
+
+
+@check("config rejects the mistakes that would corrupt an investigation")
+def _():
+    from metric_analysis.config import CatalogError, catalog_from_dict
+
+    base = {"name": "a.b", "kind": "counter", "unit": "u", "description": "d"}
+    bad = [
+        # A typo'd denominator silently degrades ratio attribution to additive
+        # on a rate metric: plausible output, wrong arithmetic.
+        {"metrics": [{**base, "denominator": "a.typo"}]},
+        {"metrics": [{**base, "kind": "summary"}]},
+        {"metrics": [{**base, "fields": {"region": []}}]},
+        {"metrics": [{**base, "denominator": "a.b"}]},
+        {"metrics": [base, base]},
+        {"metrics": [{**base, "golden_signal": "freshness"}], "golden_signals": ["errors"]},
+        {"metrics": [{**base, "unexpected": 1}]},
+        {"metrics": []},
+    ]
+    for i, data in enumerate(bad):
+        try:
+            catalog_from_dict(data)
+            raise AssertionError(f"case {i} should have raised: {data}")
+        except CatalogError:
+            pass
+
+
+@check("dynamic fields defer value checking to the TSDB, not to nothing")
+def _():
+    from metric_analysis.config import catalog_from_dict
+
+    cat = catalog_from_dict({"metrics": [{
+        "name": "a.b", "kind": "counter", "unit": "u", "description": "d",
+        "fields": {"region": ["us-east-1"], "task": None},
+        "field_cardinality": {"task": 5000},
+    }]})
+    # Enumerated fields stay strict.
+    try:
+        cat.validate_filter("a.b", {"region": "us-east1"})
+        raise AssertionError("should have raised")
+    except ToolError as e:
+        assert e.kind == "unknown_field_value"
+        assert "us-east-1" in e.suggestions
+    # Dynamic ones cannot be checked here; invariant 1 moves to the TSDB, which
+    # must return EMPTY_SELECTOR rather than an empty OK.
+    cat.validate_filter("a.b", {"task": "anything-at-all"})
+    # An unknown *tag* is still rejected -- that is a schema error, not a value.
+    try:
+        cat.validate_filter("a.b", {"nope": "x"})
+        raise AssertionError("should have raised")
+    except ToolError as e:
+        assert e.kind == "unknown_field"
+    # The cardinality guard has to size a dynamic field or it cannot protect.
+    assert cat.estimate_cardinality("a.b", {}, ["region", "task"]) == 5000
+    assert cat.estimate_cardinality("a.b", {"task": "t1"}, ["region", "task"]) == 1
+
+
+@check("golden signals are configurable, including names we did not ship")
+def _():
+    from metric_analysis.config import catalog_from_dict
+
+    m = {"kind": "gauge", "unit": "u", "description": "d"}
+    cat = catalog_from_dict({
+        "golden_signals": ["freshness", "errors"],
+        "metrics": [
+            {**m, "name": "a.lag", "golden_signal": "freshness"},
+            {**m, "name": "a.err", "golden_signal": "errors"},
+            {**m, "name": "a.detail"},
+        ],
+    })
+    # Order follows the config, not the shipped default.
+    assert list(cat.golden_signals()) == ["freshness", "errors"], cat.golden_signals()
+    assert cat.golden_signals()["freshness"] == ["a.lag"]
+
+
+@check("a catalog directory merges files deterministically")
+def _():
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from metric_analysis.config import CatalogError, load_catalog
+
+    d = Path(tempfile.mkdtemp())
+    m = {"kind": "counter", "unit": "u", "description": "d"}
+    (d / "b-team.json").write_text(json.dumps({"metrics": [{**m, "name": "b.one"}]}))
+    (d / "a-team.json").write_text(
+        json.dumps({"golden_signals": ["errors"], "metrics": [{**m, "name": "a.one"}]})
+    )
+    cat = load_catalog(d)
+    assert sorted(cat.names()) == ["a.one", "b.one"]
+    assert cat.signal_order == ("errors",)
+
+    # Two files disagreeing about sweep order is ambiguous, so it fails loudly
+    # rather than letting file ordering decide.
+    (d / "c-team.json").write_text(
+        json.dumps({"golden_signals": ["latency"], "metrics": [{**m, "name": "c.one"}]})
+    )
+    try:
+        load_catalog(d)
+        raise AssertionError("should have raised on conflicting signal order")
+    except CatalogError as e:
+        assert "conflicting" in str(e)
+
+
+@check("the shipped example catalog files load")
+def _():
+    from pathlib import Path
+
+    from metric_analysis.config import load_catalog
+
+    cat = load_catalog(Path(__file__).parent / "catalog" / "demo.json")
+    assert len(cat.names()) == 8
+    assert cat.golden_signals()["errors"] == ["spanner.rpc.errors"]
+
+
 # ----------------------------------------------------------- hard fixtures
 @check("mix shift: a pure traffic move is not reported as degradation")
 def _():
