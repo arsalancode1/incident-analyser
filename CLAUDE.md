@@ -76,7 +76,7 @@ These bind every component, not just metrics.
 
 | Component | Status | Notes |
 |---|---|---|
-| Metrics tools | **built** | `metric_analysis/`, 29 tests; golden signals, hard fixtures |
+| Metrics tools | **built** | `metric_analysis/`, 42 tests; golden signals, hard fixtures |
 | Stage-1 brief | **built** | `brief.py`; fixed sweep, materiality gate, no reasoning |
 | Change log tool | **next** | rollouts, config, flags, capacity ops |
 | Topology tool | not built | dependency graph; without it you can't get from a frontend symptom to a backend cause |
@@ -86,6 +86,9 @@ These bind every component, not just metrics.
 | Orchestrator | **built** | `incident_agent/`; system prompt, `conclude` schema, verifier pass |
 | Skills | **built** | `skills/*.json` + `incident_agent/skills.py`; declarative, deterministic retrieval |
 | Hard fixtures | **built** | `scenarios.py`; mix shift, overlapping faults |
+| Catalog config | **built** | `config.py` + `catalog/*.json`; add metrics without code |
+| Backend contract | **built** | `contract.py`; conformance a `TSDBClient` must pass |
+| Monarch adapter | **scaffold** | `monarch.py`; query shaping only, never run for real |
 | Eval harness | not built | replay over historical incidents, frozen snapshots |
 
 Rough effort split: 80% harness and tools, 15% skills, 5% agent. Teams routinely
@@ -130,11 +133,29 @@ meet, and the first confidently wrong output turns the name into a joke.
 - Comments explain *why*, especially where a guardrail looks paranoid. When you
   add a guardrail, record the bug that motivated it — that's what stops a future
   session deleting it for tidier output.
-- Run `python3 test_metric_analysis.py` and `python3 test_incident_agent.py` before
-  reporting a change complete.
+- Run `python3 test_metric_analysis.py` (42) and `python3 test_incident_agent.py` (27)
+  before reporting a change complete. Both run offline; the agent tests use a
+  scripted model client, so no API key and no network are needed.
 - The metrics package has no LLM in it and must not acquire one. Model access
   lives in `incident_agent/`, behind a provider-agnostic `ModelClient`; SDKs are
   imported lazily so numpy stays the only hard dependency.
+
+## Running against a real backend
+
+Metrics only; logs, traces, changes and topology have no tools yet.
+
+1. Put your metrics in `catalog/*.json` and check them:
+   `python3 -m metric_analysis.check catalog/`. High-cardinality tags take
+   `null` values plus a `field_cardinality` hint — a nightly snapshot of task
+   names is stale within minutes, and a stale enumeration rejects filters that
+   are valid.
+2. Implement `TSDBClient` (`monarch.py` is a scaffold for Monarch: query shape,
+   filter routing, alignment by kind, existence probing — never run for real).
+3. **Run `contract.check_contract` and fix anything critical before trusting a
+   brief.** Invariant 1 cannot be verified per query, and for live-resolved
+   fields it is enforced only by the backend. A client returning zero series
+   instead of `EMPTY_SELECTOR` makes every conclusion unsafe while looking
+   entirely normal.
 
 ## Further context
 

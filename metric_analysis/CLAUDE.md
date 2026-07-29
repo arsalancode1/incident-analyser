@@ -63,6 +63,37 @@ in six, which is worse than a hard failure because it reads as noise. Two tests
 guard it now; don't weaken them, and don't paper over failures with
 `PYTHONHASHSEED`.
 
+## The opening sweep and the materiality gate
+
+`brief.py` runs a fixed sweep: describe, fleet summary, every golden signal,
+peers, then — only if the change is established as real — attribution, onset,
+correlation. The gate is the important part. `explain_delta` decomposes whatever
+delta it is handed and explanatory power is a *share* of that delta, so on a
+flat metric some slice still owns 70% of the noise. The first version of this
+brief reported a confident location for a completely healthy fleet. Three
+independent signals each suffice: a significant fleet change point, a delta past
+a floor, or a peer outlier — fleet delta alone would miss one small cell on fire.
+
+Golden signals are swept per-signal and judged on their own terms, not for
+correlation with the symptom, because the paged metric is one view of the
+service and errors can be flat while traffic collapses. They are configured, not
+hardcoded; the four classic names are a default.
+
+`mechanism` (rate versus mix) is computed **once over the joint partition** of
+all requested dimensions, not per narrowing level. Cell names repeat across
+regions, so grouping by cell alone pools a shifting cell with its healthy
+namesakes and a pure traffic shift reappears as a rate effect. A test pins the
+verdict across three field orderings.
+
+## Fixtures worth failing
+
+`scenarios.py` carries three: `bad_rollout` (the original, kept byte-identical
+as the replay seed), `mix_shift` (traffic moves toward an always-bad cell;
+nothing degrades — reporting it as degradation pages the wrong team), and
+`overlapping_faults` (two unrelated faults; naming one culprit is the failure).
+The last two found real bugs within minutes of existing. A fixture that cannot
+be failed measures the fixture, not the system.
+
 ## Time series specifics
 
 - **Two-pass onset detection.** Coarse buckets to locate, fine re-query in a
