@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+from dataclasses import dataclass
 from typing import Any, Iterator, Protocol
 
 import numpy as np
@@ -47,6 +48,48 @@ def stable_hash(*parts: str) -> int:
     return int.from_bytes(
         hashlib.blake2b("\x00".join(parts).encode(), digest_size=8).digest(), "big"
     )
+
+
+@dataclass(frozen=True)
+class Fault:
+    """A degradation confined to one (region, cell), affecting named jobs.
+
+    `start=None` means *chronic*: the slice has always been this bad. That is
+    not a degenerate case, it is the whole basis of a mix-effect incident --
+    nothing degrades, traffic simply moves toward a slice that was already worse.
+    """
+
+    region: str
+    cell: str
+    job_error_rates: dict[str, float]
+    start: float | None = None
+    latency_ms: float | None = None
+    lock_ms: float | None = None
+    label: str = "fault"
+
+    def applies_to(self, ent: dict[str, str]) -> bool:
+        return (
+            ent.get("region") == self.region
+            and ent.get("cell") == self.cell
+            and ent.get("job", "") in self.job_error_rates
+        )
+
+
+@dataclass(frozen=True)
+class TrafficShift:
+    """A routing change. Traffic moves between cells; no error rate changes.
+
+    Drains the origin cells in proportion to their weight so the region's total
+    is preserved. That is deliberate: it means fleet-wide traffic looks flat
+    while the error rate climbs, which is exactly the incident a fleet-level
+    aggregate hides and a per-slice decomposition catches.
+    """
+
+    start: float
+    region: str
+    to_cell: str
+    from_cells: tuple[str, ...]
+    factor: float
 
 
 class TSDBClient(Protocol):
@@ -108,11 +151,18 @@ class SyntheticTSDB:
         fault_start: float | None = None,
         rollout_start: float | None = None,
         catalog: MetricCatalog | None = None,
+        faults: tuple[Fault, ...] = (),
+        traffic_shift: TrafficShift | None = None,
     ) -> None:
         self.seed = int(seed)
         self.fault_start = fault_start
         self.rollout_start = rollout_start
         self.catalog = catalog or demo_catalog()
+        # Layered on top of the built-in single fault, which stays exactly as it
+        # was: the existing fixture is the seed of the replay harness and must
+        # not shift underneath it when new scenarios are added.
+        self.faults = tuple(faults)
+        self.traffic_shift = traffic_shift
         self._queries = 0
         self._series_returned = 0
         self._points_generated = 0
@@ -201,6 +251,17 @@ class SyntheticTSDB:
         phase = _REGION_PHASE.get(ent.get("region", ""), 0.0)
         diurnal = 1.0 + _DIURNAL_AMPLITUDE * np.sin(2.0 * np.pi * t / 86400.0 + phase)
         rps = 100.0 * w * scale * diurnal * (1.0 + self._wiggle(t, 0.02, "traffic", *key))
+
+        shift = self.traffic_shift
+        if shift is not None and ent.get("region") == shift.region:
+            cell = ent.get("cell", "")
+            if cell == shift.to_cell:
+                rps = rps * np.where(t >= shift.start, shift.factor, 1.0)
+            elif cell in shift.from_cells:
+                gain = (shift.factor - 1.0) * _CELL_WEIGHT[shift.to_cell]
+                total_from = sum(_CELL_WEIGHT[c] for c in shift.from_cells)
+                drain = max(0.0, 1.0 - gain / total_from)
+                rps = rps * np.where(t >= shift.start, drain, 1.0)
         return rps * step_s
 
     def _error_rate(self, ent: dict[str, str], t: np.ndarray) -> np.ndarray:
@@ -211,6 +272,16 @@ class SyntheticTSDB:
         if self.fault_start is not None and self._faulted(ent) and job in self.FAULT_JOBS:
             faulted = self.FAULT_JOBS[job] * (1.0 + self._wiggle(t, 0.04, "fault", *key))
             rate = np.where(t >= self.fault_start, faulted, rate)
+
+        for fault in self.faults:
+            if not fault.applies_to(ent):
+                continue
+            level = fault.job_error_rates[job] * (
+                1.0 + self._wiggle(t, 0.04, fault.label, *key)
+            )
+            # start=None is chronic: the slice was always this bad, so the level
+            # applies across the whole window including the baseline.
+            rate = level if fault.start is None else np.where(t >= fault.start, level, rate)
         return rate
 
     def _values(self, spec: MetricSpec, ent: dict[str, str], t: np.ndarray, step_s: float) -> np.ndarray:
@@ -228,6 +299,10 @@ class SyntheticTSDB:
             v = base * (1.0 + self._wiggle(t, 0.04, "lat", *key))
             if self.fault_start is not None and self._faulted(ent) and ent.get("job") in self.FAULT_JOBS:
                 v = np.where(t >= self.fault_start, 55.0 + 10.0 * self._u("lat2", *key), v)
+            for fault in self.faults:
+                if fault.latency_ms is None or not fault.applies_to(ent):
+                    continue
+                v = fault.latency_ms if fault.start is None else np.where(t >= fault.start, fault.latency_ms, v)
             return v
 
         if name == "spanner.paxos.leader_elections":
@@ -242,6 +317,10 @@ class SyntheticTSDB:
             v = base * (1.0 + self._wiggle(t, 0.05, "lock", *key))
             if self.fault_start is not None and self._faulted(ent) and ent.get("job") in self.FAULT_JOBS:
                 v = np.where(t >= self.fault_start, 40.0 + 6.0 * self._u("lock2", *key), v)
+            for fault in self.faults:
+                if fault.lock_ms is None or not fault.applies_to(ent):
+                    continue
+                v = fault.lock_ms if fault.start is None else np.where(t >= fault.start, fault.lock_ms, v)
             return v
 
         if name == "spanner.tablet.split_rate":

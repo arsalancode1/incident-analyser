@@ -33,15 +33,30 @@ from typing import Any
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
-# Weights are ordered by how much each signal narrows the space, not tuned. A
-# skill written for this exact symptom metric is far stronger evidence than one
-# that merely mentions a metric which also moved.
-_W_SYMPTOM = 3
-_W_SIGNAL = 2
-_W_SHAPE = 2
-_W_CORRELATED = 1
-_W_DIMENSION = 1
-MIN_SCORE = 3
+# Split into generic and distinguishing criteria, because the first version of
+# this scoring got the balance backwards and it showed. "symptom is errors,
+# errors are material, onset is a step" describes almost every error incident,
+# so weighting those highly made `bad-rollout` the top prior for a traffic-shift
+# incident with no rollout, no version narrowing and no restarts. Generic
+# criteria now establish only that a skill is *relevant*; what ranks it is the
+# specific evidence it predicted.
+_W_SYMPTOM = 2
+_W_SIGNAL = 1
+_W_SHAPE = 1
+_W_MECHANISM = 3
+_W_CORRELATED = 3
+_W_DIMENSION = 3
+
+# A distinguishing criterion that was checkable and came back absent is evidence
+# *against* the skill, not merely missing support. Applied only where the
+# evidence actually exists -- penalising on unobserved data would be the
+# absence-of-evidence trap this project is otherwise careful about, and it is
+# why material_signals is never penalised: a signal can be flat fleet-wide while
+# it is 100% up inside the affected slice.
+_PENALTY = 2
+_PENALTY_MECHANISM = 3
+
+MIN_SCORE = 4
 MAX_RESULTS = 3
 
 # Phrasings that mean a sequence is being prescribed. Kept narrow on purpose:
@@ -167,6 +182,11 @@ def _brief_features(brief: dict[str, Any]) -> dict[str, Any]:
         "correlated_metrics": correlated,
         "dimensions": dimensions,
         "shapes": shapes,
+        "mechanism": (brief.get("mechanism") or {}).get("dominant"),
+        # Whether each kind of evidence was actually gathered. A criterion can
+        # only be contradicted by evidence that exists.
+        "has_location": bool(dimensions),
+        "ran_correlation": bool(brief.get("correlated_changes")),
     }
 
 
@@ -197,12 +217,37 @@ def retrieve(
         for shape in sorted(features["shapes"] & set(m.get("shapes") or [])):
             score += _W_SHAPE
             reasons.append(f"symptom onset shape is {shape}")
-        for metric in sorted(features["correlated_metrics"] & set(m.get("correlated_metrics") or [])):
+        wanted_mechanism = m.get("mechanism")
+        if wanted_mechanism:
+            if features["mechanism"] == wanted_mechanism:
+                score += _W_MECHANISM
+                reasons.append(f"change is {wanted_mechanism}-driven")
+            elif features["mechanism"] not in (None, "unclear"):
+                score -= _PENALTY_MECHANISM
+                reasons.append(
+                    f"counts against: expects a {wanted_mechanism}-driven change, "
+                    f"observed {features['mechanism']}-driven"
+                )
+
+        wanted_corr = set(m.get("correlated_metrics") or [])
+        hit_corr = sorted(features["correlated_metrics"] & wanted_corr)
+        for metric in hit_corr:
             score += _W_CORRELATED
             reasons.append(f"{metric} moved near onset")
-        for dim in sorted(features["dimensions"] & set(m.get("narrowed_dimensions") or [])):
+        if wanted_corr and not hit_corr and features["ran_correlation"]:
+            score -= _PENALTY
+            reasons.append(f"counts against: none of {sorted(wanted_corr)} moved near onset")
+
+        wanted_dims = set(m.get("narrowed_dimensions") or [])
+        hit_dims = sorted(features["dimensions"] & wanted_dims)
+        for dim in hit_dims:
             score += _W_DIMENSION
             reasons.append(f"change concentrates on {dim}")
+        if wanted_dims and not hit_dims and features["has_location"]:
+            score -= _PENALTY
+            reasons.append(
+                f"counts against: change does not concentrate on {sorted(wanted_dims)}"
+            )
         if score >= min_score:
             scored.append((score, skill.id, skill.to_prior(score, reasons)))
 

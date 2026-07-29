@@ -15,15 +15,20 @@ from .attribution import (
     explain_delta,
 )
 from .brief import build_brief, render_brief
-from .catalog import DEMO_FLEET, MetricCatalog, MetricSpec, demo_catalog
+from .catalog import DEMO_FLEET, GOLDEN_SIGNALS, MetricCatalog, MetricSpec, demo_catalog
 from .changepoint import ChangePoint, classify_shape, detect_change_point
 from .summarize import peer_outliers, summarize_series
 from .tools import Budget, Evidence, MetricTools
-from .tsdb import SyntheticTSDB, TSDBClient, stable_hash
+from .scenarios import SCENARIOS, bad_rollout, mix_shift, overlapping_faults
+from .tsdb import Fault, SyntheticTSDB, TrafficShift, TSDBClient, stable_hash
 from .types import QueryResult, ResultStatus, Series, ToolError, Window
 
 __all__ = [
     "DEMO_FLEET",
+    "GOLDEN_SIGNALS",
+    "SCENARIOS",
+    "Fault",
+    "TrafficShift",
     "Budget",
     "ChangePoint",
     "Evidence",
@@ -39,6 +44,9 @@ __all__ = [
     "ToolError",
     "Window",
     "attribute_additive",
+    "bad_rollout",
+    "mix_shift",
+    "overlapping_faults",
     "attribute_ratio",
     "build_brief",
     "classify_shape",

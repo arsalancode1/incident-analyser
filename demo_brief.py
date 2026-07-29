@@ -16,6 +16,7 @@ import json
 import sys
 
 from metric_analysis import Budget, MetricTools, SyntheticTSDB, Window, demo_catalog
+from metric_analysis.scenarios import mix_shift, overlapping_faults
 from metric_analysis.brief import build_brief, render_brief
 
 NOW = 1_750_000_000.0
@@ -43,9 +44,21 @@ def main() -> None:
         SyntheticTSDB(seed=4),
         as_json,
     )
+    run(
+        "C. Mix shift: traffic moved to an always-bad cell. Nothing degraded.",
+        mix_shift(ONSET),
+        as_json,
+    )
+    run(
+        "D. Two unrelated faults at once. Naming one culprit would be wrong.",
+        overlapping_faults(ONSET, NOW - 25 * 60),
+        as_json,
+    )
     print(
-        "\nNote how B costs a fraction of A: the materiality gate stops before\n"
-        "attribution, so a quiet fleet is cheap as well as honest.\n"
+        "\nB costs a fraction of A: the materiality gate stops before attribution,\n"
+        "so a quiet fleet is cheap as well as honest. C and D are the cases that\n"
+        "can actually be failed -- C must page routing rather than the service\n"
+        "owner, and D must refuse to name a single culprit.\n"
     )
 
 

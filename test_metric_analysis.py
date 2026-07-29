@@ -263,6 +263,72 @@ def _():
         assert t.evidence.get(res["evidence_id"]) is not None
 
 
+# ----------------------------------------------------------- hard fixtures
+@check("mix shift: a pure traffic move is not reported as degradation")
+def _():
+    from metric_analysis.brief import build_brief
+    from metric_analysis.scenarios import mix_shift
+
+    # Nothing degrades. Traffic moves toward a cell that was always bad.
+    # Calling this a degradation pages the service owner instead of whoever
+    # owns routing, which is the wrong team on the wrong problem.
+    t = MetricTools(demo_catalog(), mix_shift(NOW - 40 * 60), budget=Budget(max_queries=90))
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    mech = b["mechanism"]
+    assert mech["dominant"] == "mix", mech
+    assert abs(mech["rate_effect_total"]) < abs(mech["mix_effect_total"]) / 3, mech
+    assert any("routing" in f["statement"] for f in b["findings"] if f["kind"] == "mechanism"), b["findings"]
+
+
+@check("mix shift: fleet-wide traffic looks flat, which is true and misleading")
+def _():
+    from metric_analysis.brief import build_brief
+    from metric_analysis.scenarios import mix_shift
+
+    t = MetricTools(demo_catalog(), mix_shift(NOW - 40 * 60), budget=Budget(max_queries=90))
+    b = build_brief(t, "spanner.rpc.errors", Window(NOW - 1800, NOW), Window(NOW - 4 * 3600, NOW - 3 * 3600))
+    traffic = next(s for s in b["golden_signals"] if s["signal"] == "traffic")
+    # A redistribution preserves the total, so any check reading only fleet
+    # totals concludes traffic is fine. It is the per-slice shares that moved.
+    assert traffic["material"] is False, traffic
+    assert abs(traffic["delta_pct"]) < 10, traffic
+    assert next(s for s in b["golden_signals"] if s["signal"] == "errors")["material"] is True
+
+
+@check("overlapping faults: refuses to narrow to a single culprit")
+def _():
+    from metric_analysis.scenarios import overlapping_faults
+
+    # Two unrelated faults, disjoint in region and job. Confidently naming one
+    # is the failure mode; the answer on-call needs is that there are two.
+    t = MetricTools(
+        demo_catalog(), overlapping_faults(NOW - 40 * 60, NOW - 25 * 60), budget=Budget(max_queries=90)
+    )
+    out = t.explain_delta(
+        "spanner.rpc.errors", ["region", "cell", "job"],
+        baseline=Window(NOW - 4 * 3600, NOW - 3 * 3600), incident=Window(NOW - 1800, NOW),
+    )
+    assert out["narrowed_to"] is None, out["narrowed_to"]
+    assert out["spans"], out
+    values = list(out["spans"].values())[0]
+    assert len(values) == 2, values
+    assert "not a single-slice fault" in out["interpretation"]
+
+
+@check("rate-versus-mix does not depend on which field narrowing picked")
+def _():
+    from metric_analysis.scenarios import mix_shift
+
+    # Cell names repeat across regions, so grouping by cell alone pools the
+    # shifting cell with its healthy namesakes and a mix effect reappears as a
+    # rate effect. The mechanism must be computed on the joint partition.
+    t = MetricTools(demo_catalog(), mix_shift(NOW - 40 * 60), budget=Budget(max_queries=150))
+    base, inc = Window(NOW - 4 * 3600, NOW - 3 * 3600), Window(NOW - 1800, NOW)
+    for fields in (["region", "cell"], ["cell", "region"], ["region", "cell", "job"]):
+        out = t.explain_delta("spanner.rpc.errors", fields, base, inc)
+        assert out["mechanism"]["dominant"] == "mix", (fields, out["mechanism"])
+
+
 # ------------------------------------------------------- golden signals
 @check("every golden signal is checked, not just the one that paged")
 def _():

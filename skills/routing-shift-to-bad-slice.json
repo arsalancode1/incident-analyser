@@ -1,0 +1,44 @@
+{
+  "id": "routing-shift-to-bad-slice",
+  "version": 1,
+  "title": "Routing change sends traffic to a slice that was already worse",
+  "incident_class": "traffic_mix_shift",
+  "match": {
+    "symptom_metrics": [
+      "spanner.rpc.errors",
+      "spanner.rpc.latency"
+    ],
+    "material_signals": [
+      "errors"
+    ],
+    "shapes": [
+      "step_up"
+    ],
+    "mechanism": "mix",
+    "narrowed_dimensions": [
+      "cell",
+      "region"
+    ]
+  },
+  "tell": [
+    "The fleet error rate rises while no individual slice's error rate changes. Decomposition puts the whole move in the mix term and leaves the rate term near zero.",
+    "The implicated slice was already elevated in the baseline window, often for long enough that nobody considered it an incident.",
+    "Fleet-wide traffic is flat, because a redistribution moves requests between slices without changing the total. Only the per-slice shares move.",
+    "This pages whoever owns routing or load balancing, not the service owner. Nothing in the serving path got worse."
+  ],
+  "confusable_with": [
+    {
+      "class": "slice_degradation",
+      "discriminator": "A degradation shows a rate effect: the slice's own error rate is higher than it was in the baseline. Here the slice's rate is unchanged and only its share of traffic grew."
+    },
+    {
+      "class": "capacity_exhaustion",
+      "discriminator": "If the receiving slice is failing because the extra traffic overwhelmed it, its error rate will also have risen, giving a rate effect alongside the mix effect. A pure mix effect means it is failing at exactly the rate it always did."
+    }
+  ],
+  "provenance": {
+    "postmortem": "internal/pm-2260",
+    "author": "sre-traffic",
+    "added": "2026-06-18"
+  }
+}

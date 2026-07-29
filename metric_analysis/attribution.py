@@ -150,6 +150,62 @@ def attribute_ratio(
     return out
 
 
+def _agg_joint(series: list[Series], w: Window, fields: list[str]) -> dict[tuple[str, ...], float]:
+    out: dict[tuple[str, ...], float] = {}
+    for s in series:
+        v = s.slice(w).finite()
+        if len(v) == 0:
+            continue
+        key = tuple(s.labels.get(f, "<unset>") for f in fields)
+        out[key] = out.get(key, 0.0) + float(np.sum(v))
+    return out
+
+
+def mechanism_totals(
+    num_series: list[Series],
+    den_series: list[Series],
+    fields: list[str],
+    baseline: Window,
+    incident: Window,
+) -> dict[str, Any]:
+    """Split the whole change into rate effect and mix effect, once.
+
+    Computed over the *joint* partition of every requested dimension, not over
+    one field, because rate versus mix is not partition-invariant. Cell names
+    repeat across regions, so grouping by `cell` alone pools a cell that is
+    gaining traffic with its healthy namesakes elsewhere; the composition inside
+    that pooled slice changes, and a pure traffic shift reappears as a rate
+    effect. The joint key is the finest partition the requested dimensions
+    support, and it is also independent of whichever field greedy narrowing
+    happened to choose first -- the mechanism should not depend on that.
+    """
+    nb, nc = _agg_joint(num_series, baseline, fields), _agg_joint(num_series, incident, fields)
+    db, dc = _agg_joint(den_series, baseline, fields), _agg_joint(den_series, incident, fields)
+    Db, Dc = sum(db.values()), sum(dc.values())
+    Nb, Nc = sum(nb.values()), sum(nc.values())
+    if not Db or not Dc:
+        return {"rate_effect_total": None, "mix_effect_total": None, "dominant": "unclear"}
+
+    rate_total = mix_total = 0.0
+    for k in sorted(set(db) | set(dc)):
+        d_b, d_c = db.get(k, 0.0), dc.get(k, 0.0)
+        r_b = nb.get(k, 0.0) / d_b if d_b else 0.0
+        r_c = nc.get(k, 0.0) / d_c if d_c else 0.0
+        rate_total += (d_c / Dc) * (r_c - r_b)
+        mix_total += (d_c / Dc - (d_b / Db if Db else 0.0)) * r_b
+
+    scale = abs(rate_total) + abs(mix_total)
+    share = abs(rate_total) / scale if scale > 1e-15 else 0.0
+    return {
+        "rate_effect_total": _r(rate_total),
+        "mix_effect_total": _r(mix_total),
+        "total_delta": _r(Nc / Dc - Nb / Db),
+        "dominant": "unclear"
+        if scale <= 1e-15
+        else ("rate" if share >= 0.75 else "mix" if share <= 0.25 else "mixed"),
+    }
+
+
 def explain_delta(
     series_by_metric: dict[str, list[Series]],
     metric: str,
@@ -178,6 +234,7 @@ def explain_delta(
     selection: dict[str, str] = {}
     spans: dict[str, list[str]] = {}
     path: list[dict[str, Any]] = []
+    mechanism = mechanism_totals(num, den, fields, baseline, incident) if den else None
     remaining = list(fields)
 
     for _ in range(max_depth):
@@ -228,6 +285,7 @@ def explain_delta(
         if best is None:
             break
         _, fname, take, contribs = best
+
         path.append(
             {
                 "field": fname,
@@ -253,7 +311,8 @@ def explain_delta(
         "narrowed_to": selection or None,
         "spans": spans or None,
         "attribution_path": path,
-        "interpretation": _interpret(path, selection, spans, mode),
+        "mechanism": mechanism,
+        "interpretation": _interpret(path, selection, spans, mode, mechanism),
     }
 
 
@@ -262,6 +321,7 @@ def _interpret(
     sel: dict[str, str],
     spans: dict[str, list[str]],
     mode: str,
+    mechanism: dict[str, Any] | None = None,
 ) -> str:
     if not path:
         return "No dimension concentrated the change; it looks fleet-wide or the signal is diffuse."
@@ -277,11 +337,11 @@ def _interpret(
     note = f"Change concentrates in {'; '.join(parts)}."
     if spans:
         note += " Multiple values at the last level are affected comparably, so this is not a single-slice fault."
-    if mode == "ratio":
-        top = path[-1]["top_values"][0]
-        re_, me_ = abs(top.get("rate_effect") or 0), abs(top.get("mix_effect") or 0)
-        if re_ > me_ * 3:
-            note += " Driven by the slice itself degrading, not by a traffic shift."
-        elif me_ > re_ * 3:
-            note += " Driven by traffic shifting toward an already-worse slice, not new degradation."
+    dominant = (mechanism or {}).get("dominant")
+    if dominant == "rate":
+        note += " Driven by the slice itself degrading, not by a traffic shift."
+    elif dominant == "mix":
+        note += " Driven by traffic shifting toward an already-worse slice, not new degradation."
+    elif dominant == "mixed":
+        note += " Rate and mix effects are comparable; both a degradation and a traffic shift are in play."
     return note

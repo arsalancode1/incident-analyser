@@ -1,14 +1,26 @@
 {
   "id": "bad-rollout",
-  "version": 1,
+  "version": 2,
   "title": "Version-correlated regression after a rollout",
   "incident_class": "bad_rollout",
   "match": {
-    "symptom_metrics": ["spanner.rpc.errors", "spanner.rpc.latency"],
-    "material_signals": ["errors"],
-    "shapes": ["step_up"],
-    "narrowed_dimensions": ["version"],
-    "correlated_metrics": ["spanner.task.restarts"]
+    "symptom_metrics": [
+      "spanner.rpc.errors",
+      "spanner.rpc.latency"
+    ],
+    "material_signals": [
+      "errors"
+    ],
+    "shapes": [
+      "step_up"
+    ],
+    "narrowed_dimensions": [
+      "version"
+    ],
+    "correlated_metrics": [
+      "spanner.task.restarts"
+    ],
+    "mechanism": "rate"
   },
   "tell": [
     "Onset is a step, not a ramp: a build either has the defect or it does not, so the transition is as fast as the rollout reaches each task.",
@@ -26,5 +38,9 @@
       "discriminator": "A rollout landing near onset is not proof. The claim only holds if un-rolled cells show no onset; if they do, the rollout is a bystander."
     }
   ],
-  "provenance": {"postmortem": "internal/pm-2041", "author": "sre-storage", "added": "2026-03-11"}
+  "provenance": {
+    "postmortem": "internal/pm-2041",
+    "author": "sre-storage",
+    "added": "2026-03-11"
+  }
 }

@@ -358,7 +358,7 @@ def _():
     b = build_brief(t, "spanner.rpc.errors", INCIDENT, Window(NOW - 4 * 3600, NOW - 3 * 3600))
     priors = retrieve(b)
     assert priors, "expected priors for a version-correlated step change"
-    assert priors[0]["skill"] == "bad-rollout@v1", [p["skill"] for p in priors]
+    assert priors[0]["skill"].startswith("bad-rollout"), [p["skill"] for p in priors]
     assert priors[0]["matched_because"], priors[0]
     # Competing classes must still surface -- a single prior is tunnel vision
     # with citations attached.
@@ -407,6 +407,43 @@ def _():
         assert s.tell, f"{s.id} has no observations"
         assert s.confusable_with, f"{s.id} names nothing it is confused with"
         assert s.provenance.get("postmortem"), f"{s.id} has no provenance"
+
+
+@check("the wrong prior is demoted when its distinguishing evidence is absent")
+def _():
+    from incident_agent.skills import retrieve
+    from metric_analysis.brief import build_brief
+    from metric_analysis.scenarios import bad_rollout, mix_shift
+
+    base = Window(NOW - 4 * 3600, NOW - 3 * 3600)
+
+    t1 = MetricTools(demo_catalog(), bad_rollout(ONSET), budget=Budget(max_queries=90))
+    rollout_priors = retrieve(build_brief(t1, "spanner.rpc.errors", INCIDENT, base))
+    assert rollout_priors[0]["skill"].startswith("bad-rollout"), [p["skill"] for p in rollout_priors]
+
+    # Same symptom metric, same material signal, same step_up shape -- all the
+    # generic criteria bad-rollout matches on. But no rollout happened and the
+    # change is mix-driven. Ranking it first here is exactly the failure this
+    # scoring was rebalanced to prevent.
+    t2 = MetricTools(demo_catalog(), mix_shift(ONSET), budget=Budget(max_queries=90))
+    mix_priors = retrieve(build_brief(t2, "spanner.rpc.errors", INCIDENT, base))
+    assert mix_priors, "expected the traffic-shift prior to match"
+    assert mix_priors[0]["skill"].startswith("routing-shift"), [p["skill"] for p in mix_priors]
+    assert not any(p["skill"].startswith("bad-rollout") for p in mix_priors), [p["skill"] for p in mix_priors]
+
+
+@check("a contradicted criterion is reported as counting against the prior")
+def _():
+    from incident_agent.skills import retrieve
+    from metric_analysis.brief import build_brief
+    from metric_analysis.scenarios import bad_rollout
+
+    t = MetricTools(demo_catalog(), bad_rollout(ONSET), budget=Budget(max_queries=90))
+    priors = retrieve(build_brief(t, "spanner.rpc.errors", INCIDENT, Window(NOW - 4 * 3600, NOW - 3 * 3600)))
+    against = [r for p in priors for r in p["matched_because"] if r.startswith("counts against")]
+    # An unexplained prior is one the agent cannot sensibly discount, so the
+    # reasons must carry the negative evidence too, not only the positive.
+    assert against, [p["matched_because"] for p in priors]
 
 
 if __name__ == "__main__":

@@ -538,6 +538,7 @@ def _assemble(
         "materiality": materiality,
         "onset": {"timestamp": _r(onset_ts, 1), "utc": _utc(onset_ts)} if onset_ts else None,
         "location": {"narrowed_to": narrowed or None, "spans": spans or None},
+        "mechanism": (attribution or {}).get("mechanism"),
         "golden_signals": signals,
         "blast_radius": blast or None,
         "correlated_changes": changes,
@@ -557,19 +558,18 @@ def _direction(pct: float) -> str:
 def _mode_note(attribution: dict[str, Any]) -> str | None:
     """Rate effect and mix effect are different incidents with different fixes;
     surfacing which one dominates is the single most actionable line here."""
-    if attribution.get("mode") != "ratio":
-        return None
-    path = attribution.get("attribution_path") or []
-    if not path:
-        return None
-    top = (path[-1].get("top_values") or [{}])[0]
-    rate, mix = abs(top.get("rate_effect") or 0.0), abs(top.get("mix_effect") or 0.0)
-    if rate > mix * 3:
+    dominant = (attribution.get("mechanism") or {}).get("dominant")
+    if dominant == "rate":
         return "Driven by the slice itself degrading, not by a traffic shift (pages the service owner)."
-    if mix > rate * 3:
+    if dominant == "mix":
         return (
             "Driven by traffic shifting toward an already-worse slice, not new degradation "
             "(pages whoever changed routing)."
+        )
+    if dominant == "mixed":
+        return (
+            "Rate and mix effects are comparable: part degradation, part traffic shift. "
+            "Both the service owner and whoever changed routing have something to look at."
         )
     return None
 

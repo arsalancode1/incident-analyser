@@ -4,10 +4,10 @@ The metrics tool family for the incident debugging agent. No LLM anywhere in
 here — this is the deterministic layer the orchestrator calls into.
 
 ```
-python3 test_metric_analysis.py     # 25 tests
+python3 test_metric_analysis.py     # 29 tests
 python3 demo_investigation.py       # end-to-end on a synthetic incident
-python3 demo_brief.py               # stage-1 brief: a bad rollout, and a healthy fleet
-python3 test_incident_agent.py      # 25 tests, agent harness + skills, no network needed
+python3 demo_brief.py               # stage-1 brief across four scenarios
+python3 test_incident_agent.py      # 27 tests, agent harness + skills, no network needed
 python3 demo_agent.py               # the agent loop (scripted model, no API key)
 ```
 
