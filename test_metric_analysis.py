@@ -263,6 +263,160 @@ def _():
         assert t.evidence.get(res["evidence_id"]) is not None
 
 
+# ------------------------------------------------------ backend contract
+@check("the reference client passes its own contract suite")
+def _():
+    from metric_analysis.contract import Probe, check_contract
+
+    probe = Probe(
+        metric="spanner.rpc.errors", window=Window(NOW - 1800, NOW),
+        valid_filter={"region": "eu-west-4"},
+        # v2.41 is in the schema but no entity runs it without a rollout, so
+        # this is a filter that is well-formed and matches nothing.
+        bogus_filter={"version": "v2.41"}, group_by_field="cell",
+    )
+    violations = check_contract(SyntheticTSDB(seed=11), demo_catalog(), probe)
+    assert violations == [], [v.to_dict() for v in violations]
+
+
+@check("the contract suite catches a client that hides bad selectors")
+def _():
+    from metric_analysis.contract import Probe, check_contract
+    from metric_analysis.types import QueryResult, ResultStatus
+
+    class HidesBadSelectors(SyntheticTSDB):
+        # The mistake a real integration makes, because storage cannot tell the
+        # two apart: an unmatched filter and a quiet entity both come back empty.
+        def fetch(self, *a, **kw):
+            r = super().fetch(*a, **kw)
+            if r.status is ResultStatus.EMPTY_SELECTOR:
+                return QueryResult(ResultStatus.OK, [], 0)
+            return r
+
+    probe = Probe(
+        metric="spanner.rpc.errors", window=Window(NOW - 1800, NOW),
+        valid_filter={"region": "eu-west-4"}, bogus_filter={"version": "v2.41"},
+    )
+    found = check_contract(HidesBadSelectors(seed=11), demo_catalog(), probe)
+    assert any(v.check == "empty_selector" and v.severity == "critical" for v in found), found
+
+
+@check("the contract suite blames a bad probe on the probe, not the client")
+def _():
+    from metric_analysis.contract import Probe, check_contract
+
+    # A suite that cries wolf gets skipped exactly when it matters, so a
+    # bogus_filter that is not actually bogus must not be reported as a
+    # backend defect.
+    probe = Probe(
+        metric="spanner.rpc.errors", window=Window(NOW - 1800, NOW),
+        valid_filter={"region": "eu-west-4"}, bogus_filter={"region": "eu-west-4"},
+    )
+    found = check_contract(SyntheticTSDB(seed=11), demo_catalog(), probe)
+    assert [v.check for v in found] == ["probe_configuration"], [v.to_dict() for v in found]
+    assert not any(v.severity == "critical" for v in found)
+
+
+@check("the contract suite catches structural defects in returned series")
+def _():
+    from metric_analysis.contract import Probe, check_contract
+
+    class StripsGroupLabels(SyntheticTSDB):
+        def fetch(self, *a, **kw):
+            r = super().fetch(*a, **kw)
+            for s in r.series:
+                s.labels.clear()
+            return r
+
+    probe = Probe(
+        metric="spanner.rpc.errors", window=Window(NOW - 1800, NOW),
+        valid_filter={"region": "eu-west-4"}, bogus_filter={"version": "v2.41"},
+        group_by_field="cell",
+    )
+    found = {v.check for v in check_contract(StripsGroupLabels(seed=11), demo_catalog(), probe)}
+    assert "group_by_labels" in found, found
+
+
+# ------------------------------------------------------ monarch adapter
+@check("monarch query building routes filters and picks alignment by kind")
+def _():
+    from metric_analysis.monarch import MonarchQuery, MonarchTSDB
+
+    seen: list[MonarchQuery] = []
+
+    def execute(q):
+        seen.append(q)
+        return []
+
+    tsdb = MonarchTSDB(execute=execute, catalog=demo_catalog())
+    tsdb.fetch("spanner.rpc.errors", {"region": "eu-west-4", "version": "v2.41"},
+               Window(NOW - 600, NOW), 60.0, ["cell"])
+    q = seen[0]
+    # region is target identity; version is a metric label. Sending either to
+    # the wrong clause builds a query that does not mean what it says.
+    assert q.target_filters == {"region": "eu-west-4"}, q.target_filters
+    assert q.metric_filters == {"version": "v2.41"}, q.metric_filters
+    # Counters must align with delta: aligning one with mean reports a rate
+    # where a count is expected and makes window sums resolution-dependent.
+    assert q.align_fn == "delta" and q.reduce_fn == "sum", q.to_dict()
+
+    seen.clear()
+    tsdb.fetch("spanner.lock.wait_time", {}, Window(NOW - 600, NOW), 60.0, [])
+    assert seen[0].align_fn == "mean" and seen[0].reduce_fn == "mean", seen[0].to_dict()
+
+
+@check("monarch adapter separates a bad selector from a quiet entity")
+def _():
+    from metric_analysis.monarch import MonarchTSDB
+    from metric_analysis.types import ResultStatus
+
+    calls: list[str] = []
+
+    def only_wide_window_has_data(q):
+        calls.append(q.purpose)
+        # Nothing in the incident window; data when the probe looks wider.
+        return [({"region": "eu-west-4"}, [NOW - 5000.0], [1.0])] if q.purpose == "existence_probe" else []
+
+    tsdb = MonarchTSDB(execute=only_wide_window_has_data, catalog=demo_catalog())
+    got = tsdb.fetch("spanner.rpc.errors", {"region": "eu-west-4"}, Window(NOW - 600, NOW), 60.0, [])
+    # Entity is real, just silent -- a symptom worth investigating, not a
+    # malformed query.
+    assert got.status is ResultStatus.NO_DATA, got
+    assert calls == ["analysis", "existence_probe"], calls
+
+    def never_any_data(q):
+        return []
+
+    tsdb2 = MonarchTSDB(execute=never_any_data, catalog=demo_catalog())
+    got2 = tsdb2.fetch("spanner.rpc.errors", {"region": "nonsense"}, Window(NOW - 600, NOW), 60.0, [])
+    assert got2.status is ResultStatus.EMPTY_SELECTOR, got2
+
+    # An unfiltered query has no selector to be wrong about.
+    got3 = tsdb2.fetch("spanner.rpc.errors", {}, Window(NOW - 600, NOW), 60.0, [])
+    assert got3.status is ResultStatus.NO_DATA, got3
+
+
+@check("monarch adapter sorts series and refuses to invent percentiles")
+def _():
+    from metric_analysis.monarch import MonarchTSDB, extract_percentile
+
+    def unsorted(q):
+        return [({"cell": "fb"}, [NOW, NOW - 60.0, NOW - 120.0], [3.0, 2.0, 1.0])]
+
+    tsdb = MonarchTSDB(execute=unsorted, catalog=demo_catalog())
+    s = tsdb.fetch("spanner.rpc.errors", {}, Window(NOW - 600, NOW), 60.0, []).series[0]
+    assert list(s.timestamps) == sorted(s.timestamps)
+    assert list(s.values) == [1.0, 2.0, 3.0], s.values
+
+    # An averaged quantile looks plausible and is wrong in a way nothing
+    # downstream can detect, so this raises rather than approximating.
+    try:
+        extract_percentile(object(), 0.99)
+        raise AssertionError("should have raised")
+    except NotImplementedError as e:
+        assert "bucketer" in str(e)
+
+
 # ------------------------------------------------------ catalog config
 @check("catalog round-trips through config without loss")
 def _():

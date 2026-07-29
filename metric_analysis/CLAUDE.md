@@ -108,6 +108,19 @@ requirements: server-side aggregation, and `fetch` must return `EMPTY_SELECTOR`
 second one is the most likely thing to be quietly wrong in a real backend, and
 it silently corrupts every conclusion downstream.
 
+**Run `contract.check_contract` before trusting any output from a new backend.**
+It checks the behaviour the analysis layer assumes and cannot verify per-query:
+the EMPTY_SELECTOR contract, NO_DATA versus EMPTY_SELECTOR, sample ordering and
+alignment, group_by labelling, and determinism. Verified to catch each of those
+by injecting them into the reference client. It also distinguishes a
+misconfigured probe from a backend defect — a suite that cries wolf gets skipped
+exactly when it matters.
+
+`monarch.py` is a scaffold for Monarch: query shaping, filter routing between
+target and metric fields, alignment by metric kind, and an existence-probe
+strategy for EMPTY_SELECTOR. It has never run against a real instance — supply
+an executor, then run the contract suite.
+
 Keep `SyntheticTSDB` working; it's what the tests and replay harness run against.
 
 Generate the catalog nightly from the metric registry. Auto-draft descriptions,

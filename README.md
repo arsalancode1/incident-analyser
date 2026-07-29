@@ -4,7 +4,7 @@ The metrics tool family for the incident debugging agent. No LLM anywhere in
 here — this is the deterministic layer the orchestrator calls into.
 
 ```
-python3 test_metric_analysis.py     # 35 tests
+python3 test_metric_analysis.py     # 42 tests
 python3 demo_investigation.py       # end-to-end on a synthetic incident
 python3 demo_brief.py               # stage-1 brief across four scenarios
 python3 test_incident_agent.py      # 27 tests, agent harness + skills, no network needed
@@ -23,6 +23,8 @@ python3 demo_agent.py               # the agent loop (scripted model, no API key
 | `attribution.py` | `explain_delta`: additive and exact ratio decomposition |
 | `tools.py` | Agent-facing surface: validation, budgets, cache, evidence ledger |
 | `config.py` | Load the catalog from JSON: add metrics without code changes |
+| `contract.py` | Conformance checks a `TSDBClient` must pass before you trust it |
+| `monarch.py` | Monarch adapter scaffold: query shaping, EMPTY_SELECTOR strategy |
 | `scenarios.py` | Named incident fixtures: mix shift, overlapping faults |
 | `brief.py` | Stage-1 auto-generated incident brief: fixed sweep, no reasoning |
 
